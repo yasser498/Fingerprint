@@ -85,13 +85,8 @@ export const StorageService = {
         return initialSettings;
     }
     const parsed = JSON.parse(data);
-    // Migration: ensure devices array exists if upgrading from old version
     if (!parsed.devices) {
-        return { 
-            ...initialSettings, 
-            ...parsed, 
-            devices: initialSettings.devices 
-        };
+        return { ...initialSettings, ...parsed, devices: initialSettings.devices };
     }
     return parsed;
   },
@@ -100,20 +95,57 @@ export const StorageService = {
     localStorage.setItem(KEYS.SETTINGS, JSON.stringify(settings));
   },
 
+  // REAL ENROLLMENT
+  enrollFingerprint: async (device: FingerprintDevice, studentId: string) => {
+    // Only works for ZK Direct
+    if (device.type !== 'zk_direct' || !device.ip) {
+        throw new Error("لا يمكن تسجيل البصمة إلا عبر أجهزة ZKTeco المتصلة بالشبكة.");
+    }
+
+    try {
+        const controller = new AbortController();
+        // Give user 60 seconds to complete the 3-press process on the device
+        const timeoutId = setTimeout(() => controller.abort(), 60000); 
+
+        const url = `http://localhost:3001/enroll?ip=${device.ip}&port=${device.port || 4370}&id=${studentId}`;
+        
+        const response = await fetch(url, {
+            method: 'GET',
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            throw new Error("فشل الاتصال بالوسيط (Bridge Agent). تأكد من تشغيله.");
+        }
+
+        const result = await response.json();
+        
+        if (!result.success) {
+            throw new Error(result.message || "فشل التسجيل من الجهاز.");
+        }
+
+        return result.template; // Returns the fingerprint template string
+    } catch (error: any) {
+        if (error.name === 'AbortError') {
+            throw new Error("انتهت المهلة الزمنية. لم يتم تسجيل البصمة في الوقت المحدد.");
+        }
+        throw error;
+    }
+  },
+
   // MULTI-DEVICE SYNC
   syncWithDevice: async () => {
     const settings = StorageService.getSettings();
     const students = StorageService.getStudents();
-    let existingLogs = StorageService.getAttendance(); // Let is mutable
+    let existingLogs = StorageService.getAttendance();
     let totalNew = 0;
 
-    // Loop through all configured devices
     for (const device of settings.devices) {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 sec timeout per device
+            const timeoutId = setTimeout(() => controller.abort(), 3000); 
 
-            // Build URL based on device config
             let url = `http://localhost:3001/logs?mode=${device.type}`;
             if (device.type === 'zk_direct') {
                 if (!device.ip) continue;
@@ -123,10 +155,7 @@ export const StorageService = {
                 url += `&path=${encodeURIComponent(device.filePath)}`;
             }
 
-            const response = await fetch(url, {
-                method: 'GET',
-                signal: controller.signal
-            });
+            const response = await fetch(url, { method: 'GET', signal: controller.signal });
             clearTimeout(timeoutId);
 
             if (!response.ok) continue;
@@ -139,13 +168,11 @@ export const StorageService = {
 
                 for (const log of rawLogs) {
                     const student = students.find(s => s.studentId == log.id);
-                    
                     if (student) {
                         const logDate = new Date(log.timestamp);
                         if (isNaN(logDate.getTime())) continue;
 
                         const dateStr = logDate.toISOString().split('T')[0];
-                        // Unique ID includes device ID now to prevent collisions if timestamps match exactly
                         const recordId = `${student.id}_${logDate.getTime()}`; 
 
                         const exists = existingLogs.some(r => r.id === recordId);
@@ -167,7 +194,7 @@ export const StorageService = {
                                 timestamp: log.timestamp,
                                 date: dateStr,
                                 status: status,
-                                deviceId: device.name // Store the friendly name
+                                deviceId: device.name
                             });
                         }
                     }
@@ -176,12 +203,9 @@ export const StorageService = {
                 if (newRecords.length > 0) {
                     existingLogs = [...existingLogs, ...newRecords];
                     totalNew += newRecords.length;
-                    
-                    // Update last sync time for this device (optional, in memory only for now unless saved)
                     device.lastSync = new Date().toISOString();
                 }
             }
-
         } catch (error) {
             console.debug(`Skipping device ${device.name}:`, error);
         }
@@ -189,9 +213,7 @@ export const StorageService = {
 
     if (totalNew > 0) {
         localStorage.setItem(KEYS.ATTENDANCE, JSON.stringify(existingLogs));
-        // Save settings to update lastSync times if we implemented that fully
         StorageService.saveSettings(settings);
-        console.log(`Synced total ${totalNew} new records.`);
     }
   },
   

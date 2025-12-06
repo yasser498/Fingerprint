@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Plus, Search, FileDown, FileUp, Trash2, Fingerprint, ScanLine, Laptop, Save, X, AlertCircle, Loader2, CheckCircle2, Wifi, Filter, RefreshCw, Database } from 'lucide-react';
+import { Plus, Search, FileDown, FileUp, Trash2, Fingerprint, ScanLine, Laptop, Save, X, AlertCircle, Loader2, CheckCircle2, Wifi, Filter, RefreshCw, Database, AlertTriangle } from 'lucide-react';
 import { Student } from '../types';
 import { StorageService } from '../services/storageService';
 
@@ -26,7 +26,8 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
   const [filterStatus, setFilterStatus] = useState<'all' | 'registered' | 'not_registered'>('all');
 
   // --- Scanning State ---
-  const [scanStatus, setScanStatus] = useState<'idle' | 'connecting' | 'waiting_finger' | 'scanning' | 'success'>('idle');
+  const [scanStatus, setScanStatus] = useState<'idle' | 'connecting' | 'waiting_device' | 'success' | 'error'>('idle');
+  const [scanError, setScanError] = useState('');
 
   // --- Form State ---
   const [formData, setFormData] = useState<Partial<Student>>({
@@ -94,7 +95,6 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
     XLSX.writeFile(wb, "نموذج_استيراد_الطلاب.xlsx");
   };
 
-  // --- Full Database Backup (Preserves State) ---
   const handleFullBackup = () => {
       const dataStr = JSON.stringify(students, null, 2);
       const blob = new Blob([dataStr], { type: "application/json" });
@@ -108,7 +108,6 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
       URL.revokeObjectURL(url);
   };
 
-  // --- Smart Sync Import ---
   const handleSmartSync = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -133,13 +132,10 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
       const ws = wb.Sheets[wsname];
       const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
       
-      const rows = data.slice(1) as any[]; // Skip header
+      const rows = data.slice(1) as any[]; 
       
-      // 1. Process Excel Data into a Map
       const excelStudentsMap = new Map<string, any>();
       rows.forEach(row => {
-          // Check mandatory fields (Name & ID) - Adjust indices based on your template
-          // Assuming: 0:Name, 1:ID, 2:Grade, 3:Class, 4:Phone
           if(row[1]) {
              excelStudentsMap.set(String(row[1]).trim(), {
                  name: row[0],
@@ -157,22 +153,19 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
       let updated = 0;
       let deleted = 0;
 
-      // 2. Iterate Excel Map: Update Existing or Create New
       excelStudentsMap.forEach((excelData, studentId) => {
           const existing = currentStudents.find(s => s.studentId === studentId);
           
           if (existing) {
-              // Update logic: Preserve ID, FP ID, FP Data, CreatedAt
               newStudentList.push({
                   ...existing,
-                  name: excelData.name, // Update Name
-                  grade: excelData.grade, // Update Grade
-                  classroom: excelData.classroom, // Update Class
-                  phone: excelData.phone // Update Phone
+                  name: excelData.name, 
+                  grade: excelData.grade, 
+                  classroom: excelData.classroom, 
+                  phone: excelData.phone 
               });
               updated++;
           } else {
-              // Create New
               newStudentList.push({
                   id: Math.random().toString(36).substr(2, 9),
                   name: excelData.name,
@@ -187,17 +180,10 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
           }
       });
 
-      // 3. Calculation Deletions (Those in DB but NOT in New List)
-      // Note: newStudentList only contains people from Excel.
-      // So anyone not in newStudentList is effectively deleted.
-      deleted = currentStudents.length - updated; // (Total Old) - (Found & Updated)
-
-      // 4. Save
+      deleted = currentStudents.length - updated; 
       StorageService.setStudents(newStudentList);
-      
-      // Force UI Refresh (Parent Component needs to reload data, simpler to reload page or call a prop)
       alert(`تمت المزامنة بنجاح:\n- تم إضافة: ${added}\n- تم تحديث: ${updated}\n- تم حذف: ${deleted}`);
-      window.location.reload(); // Simple refresh to ensure all states update
+      window.location.reload(); 
     };
     reader.readAsBinaryString(file);
     e.target.value = ''; 
@@ -208,15 +194,8 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
       if (count === 0) return;
 
       if(confirm(`هل أنت متأكد من حذف (${count}) طالب؟\nسيتم حذفهم من قاعدة البيانات ومحاولة إزالتهم من سجلات البصمة.`)) {
-          // Extract IDs
           const idsToDelete = filteredStudents.map(s => s.id);
-          
-          // Delete from Local Storage
           StorageService.deleteStudentsBulk(idsToDelete);
-
-          // Simulate Device Deletion
-          console.log(`[Device Simulation] Sending delete command for ${count} users...`);
-          
           alert('تم الحذف بنجاح');
           window.location.reload();
       }
@@ -233,7 +212,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
       grade: formData.grade || '',
       classroom: formData.classroom || '',
       phone: formData.phone || '',
-      fingerprintId: null, // Always null on manual creation
+      fingerprintId: null, 
       createdAt: new Date().toISOString()
     });
     setIsModalOpen(false);
@@ -244,50 +223,53 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
     setSelectedStudentForFP(student);
     setIsFingerprintModalOpen(true);
     setScanStatus('idle');
+    setScanError('');
   };
 
-  const simulateScan = () => {
+  const startRealEnrollment = async () => {
+    if (!selectedStudentForFP) return;
+    
+    // Check if device is configured
+    const device = settings.devices.find(d => d.type === 'zk_direct');
+    if (!device) {
+        setScanError('لم يتم إعداد جهاز بصمة شبكي (ZK Direct) في الإعدادات.');
+        setScanStatus('error');
+        return;
+    }
+
     setScanStatus('connecting');
-    setTimeout(() => {
-        setScanStatus('waiting_finger');
+    setScanError('');
+
+    try {
+        // This will call the Bridge Agent
+        // The Bridge will instruct the device to register user, or check if user registered
+        const template = await StorageService.enrollFingerprint(device, selectedStudentForFP.studentId);
+        
+        // If successful
+        const updated = {
+            ...selectedStudentForFP,
+            fingerprintId: `FP_${selectedStudentForFP.studentId}`,
+            fingerprintData: template
+        };
+        onUpdate(updated);
+        setScanStatus('success');
+        
+        // Auto close after 3 seconds
         setTimeout(() => {
-            setScanStatus('scanning');
-            setTimeout(() => {
-                if (selectedStudentForFP) {
-                    const updated = {
-                        ...selectedStudentForFP,
-                        fingerprintId: `FP_${selectedStudentForFP.studentId}`,
-                        fingerprintData: 'mock_hash_xyz_123'
-                    };
-                    onUpdate(updated);
-                    setScanStatus('success');
-                    setTimeout(() => {
-                        setIsFingerprintModalOpen(false);
-                        setScanStatus('idle');
-                    }, 1500);
-                }
-            }, 2000);
+            setIsFingerprintModalOpen(false);
+            setScanStatus('idle');
         }, 3000);
-    }, 2000);
-  };
 
-  const getStatusText = () => {
-      const targetDevice = settings.devices[0];
-      const deviceLabel = targetDevice ? (targetDevice.ip || targetDevice.name) : 'No Device';
-
-      switch(scanStatus) {
-          case 'connecting': return `جاري الاتصال بجهاز البصمة (${deviceLabel})...`;
-          case 'waiting_finger': return 'يرجى وضع إصبع الطالب على الجهاز الآن...';
-          case 'scanning': return 'جاري مسح البصمة ومعالجة البيانات...';
-          case 'success': return 'تم تسجيل البصمة بنجاح!';
-          default: return 'قم بوضع إصبع الطالب على جهاز الماسح الضوئي المتصل';
-      }
+    } catch (err: any) {
+        setScanStatus('error');
+        setScanError(err.message || 'حدث خطأ أثناء الاتصال بالجهاز');
+    }
   };
 
   return (
     <div className="space-y-6">
       
-      {/* --- Mini Dashboard (Quick Stats) --- */}
+      {/* --- Mini Dashboard --- */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
               <div>
@@ -296,20 +278,14 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
               </div>
               <div className="bg-blue-50 p-3 rounded-lg text-blue-600"><CheckCircle2 className="w-6 h-6" /></div>
           </div>
-          <div 
-             className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between cursor-pointer hover:border-green-300 transition-colors"
-             onClick={() => setFilterStatus('registered')}
-          >
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between cursor-pointer hover:border-green-300 transition-colors" onClick={() => setFilterStatus('registered')}>
               <div>
                   <p className="text-sm text-slate-500 font-bold mb-1">لديهم بصمة</p>
                   <h3 className="text-3xl font-bold text-green-600">{stats.registered}</h3>
               </div>
               <div className="bg-green-50 p-3 rounded-lg text-green-600"><Fingerprint className="w-6 h-6" /></div>
           </div>
-          <div 
-             className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between cursor-pointer hover:border-red-300 transition-colors"
-             onClick={() => setFilterStatus('not_registered')}
-          >
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between cursor-pointer hover:border-red-300 transition-colors" onClick={() => setFilterStatus('not_registered')}>
               <div>
                   <p className="text-sm text-slate-500 font-bold mb-1">بدون بصمة</p>
                   <h3 className="text-3xl font-bold text-red-500">{stats.notRegistered}</h3>
@@ -320,38 +296,24 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
 
       {/* --- Controls Header --- */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-        
-        {/* Filters */}
         <div className="flex-1 w-full grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-500 flex items-center gap-1"><Filter className="w-3 h-3" /> المرحلة / الصف</label>
-                <select 
-                    value={filterGrade} 
-                    onChange={e => setFilterGrade(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-primary/20"
-                >
+                <select value={filterGrade} onChange={e => setFilterGrade(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-primary/20">
                     <option value="all">الكل</option>
                     {uniqueGrades.map(g => <option key={g} value={g}>{g}</option>)}
                 </select>
             </div>
             <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-500 flex items-center gap-1"><Filter className="w-3 h-3" /> الفصل</label>
-                <select 
-                    value={filterClassroom} 
-                    onChange={e => setFilterClassroom(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-primary/20"
-                >
+                <select value={filterClassroom} onChange={e => setFilterClassroom(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-primary/20">
                     <option value="all">الكل</option>
                     {uniqueClassrooms.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
             </div>
             <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-500 flex items-center gap-1"><Fingerprint className="w-3 h-3" /> حالة البصمة</label>
-                <select 
-                    value={filterStatus} 
-                    onChange={e => setFilterStatus(e.target.value as any)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-primary/20"
-                >
+                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-primary/20">
                     <option value="all">الجميع</option>
                     <option value="registered">مسجل فقط</option>
                     <option value="not_registered">غير مسجل</option>
@@ -359,64 +321,34 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
             </div>
         </div>
 
-        {/* Action Buttons */}
         <div className="flex flex-wrap gap-2">
-            <button 
-                onClick={handleFullBackup}
-                title="تصدير قاعدة البيانات كاملة للحفاظ على حالة البصمة"
-                className="flex items-center gap-2 px-3 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700 shadow-sm text-sm"
-            >
+            <button onClick={handleFullBackup} className="flex items-center gap-2 px-3 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700 shadow-sm text-sm">
                 <Database className="w-4 h-4" />
-                <span className="hidden lg:inline">نسخ احتياطي (JSON)</span>
+                <span className="hidden lg:inline">نسخ احتياطي</span>
             </button>
-
-            <button 
-                onClick={handleExportTemplate}
-                className="flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50 text-sm"
-            >
+            <button onClick={handleExportTemplate} className="flex items-center gap-2 px-3 py-2.5 bg-white border border-slate-300 rounded-lg text-slate-600 hover:bg-slate-50 text-sm">
                 <FileDown className="w-4 h-4" />
                 <span className="hidden lg:inline">نموذج</span>
             </button>
-
             <div className="relative">
-                <button 
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-2 px-3 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 shadow-sm shadow-green-200 text-sm"
-                >
+                <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 shadow-sm shadow-green-200 text-sm">
                     <RefreshCw className="w-4 h-4" />
                     <span>مزامنة Excel</span>
                 </button>
-                <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handleSmartSync} 
-                    accept=".xlsx, .xls" 
-                    className="hidden" 
-                />
+                <input type="file" ref={fileInputRef} onChange={handleSmartSync} accept=".xlsx, .xls" className="hidden" />
             </div>
-
-            <button 
-                onClick={() => setIsModalOpen(true)}
-                className="flex items-center gap-2 px-3 py-2.5 bg-primary text-white rounded-lg hover:bg-indigo-700 shadow-sm shadow-indigo-200 text-sm"
-            >
+            <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-3 py-2.5 bg-primary text-white rounded-lg hover:bg-indigo-700 shadow-sm shadow-indigo-200 text-sm">
                 <Plus className="w-4 h-4" />
                 <span>إضافة</span>
             </button>
         </div>
       </div>
 
-      {/* Bulk Action Header (Only shows if filtered results exist) */}
       <div className="flex items-center justify-between bg-slate-100 p-3 rounded-xl border border-slate-200">
-         <div className="text-sm text-slate-600 font-bold px-2">
-             الطلاب المعروضين: <span className="text-primary">{filteredStudents.length}</span> طالب
-         </div>
+         <div className="text-sm text-slate-600 font-bold px-2">الطلاب: <span className="text-primary">{filteredStudents.length}</span></div>
          {filteredStudents.length > 0 && (
-             <button 
-                onClick={handleBulkDelete}
-                className="flex items-center gap-2 px-4 py-1.5 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 font-bold text-sm transition-colors"
-             >
-                <Trash2 className="w-4 h-4" />
-                حذف القائمة الحالية ({filteredStudents.length})
+             <button onClick={handleBulkDelete} className="flex items-center gap-2 px-4 py-1.5 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 font-bold text-sm transition-colors">
+                <Trash2 className="w-4 h-4" /> حذف القائمة ({filteredStudents.length})
              </button>
          )}
       </div>
@@ -424,13 +356,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
       {/* Search Bar */}
       <div className="relative">
         <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
-        <input 
-          type="text" 
-          placeholder="بحث سريع بالاسم، رقم الطالب أو الجوال..." 
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full pl-4 pr-12 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/50"
-        />
+        <input type="text" placeholder="بحث..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-4 pr-12 py-3 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/50" />
       </div>
 
       {/* Students Table */}
@@ -447,19 +373,13 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
           </thead>
           <tbody className="divide-y divide-slate-100">
             {filteredStudents.length === 0 ? (
-                <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-slate-400">لا يوجد طلاب مطابقين للفلتر</td>
-                </tr>
+                <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400">لا يوجد بيانات</td></tr>
             ) : (
                 filteredStudents.map((student) => (
                 <tr key={student.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 text-slate-600 font-mono">{student.studentId}</td>
                     <td className="px-6 py-4 font-medium text-slate-800">{student.name}</td>
-                    <td className="px-6 py-4 text-slate-600">
-                        <span className="px-2 py-1 bg-slate-100 rounded text-xs font-bold text-slate-600">
-                            {student.grade} - {student.classroom}
-                        </span>
-                    </td>
+                    <td className="px-6 py-4 text-slate-600"><span className="px-2 py-1 bg-slate-100 rounded text-xs font-bold text-slate-600">{student.grade} - {student.classroom}</span></td>
                     <td className="px-6 py-4">
                         {student.fingerprintId ? (
                             <div className="flex items-center gap-1.5 text-green-600">
@@ -467,24 +387,14 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
                                 <span className="text-sm font-medium">مسجل ({student.fingerprintId})</span>
                             </div>
                         ) : (
-                            <button 
-                                onClick={() => openFingerprintModal(student)}
-                                className="flex items-center gap-1.5 text-amber-600 bg-amber-50 px-3 py-1 rounded-full hover:bg-amber-100 text-sm transition-colors border border-amber-100"
-                            >
-                                <ScanLine className="w-4 h-4" />
-                                <span>تسجيل البصمة</span>
+                            <button onClick={() => openFingerprintModal(student)} className="flex items-center gap-1.5 text-amber-600 bg-amber-50 px-3 py-1 rounded-full hover:bg-amber-100 text-sm transition-colors border border-amber-100">
+                                <ScanLine className="w-4 h-4" /> <span>تسجيل البصمة</span>
                             </button>
                         )}
                     </td>
                     <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
-                            <button 
-                                onClick={() => onDelete(student.id)}
-                                title="حذف الطالب"
-                                className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                            >
-                                <Trash2 className="w-4 h-4" />
-                            </button>
+                            <button onClick={() => onDelete(student.id)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
                         </div>
                     </td>
                 </tr>
@@ -505,41 +415,22 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg flex items-start gap-2">
                  <AlertCircle className="w-5 h-5 text-blue-500 mt-0.5" />
-                 <p className="text-sm text-blue-700">
-                    عند الإضافة اليدوية، لا يتم تسجيل البصمة فوراً. يمكنك إضافة البصمة لاحقاً من زر "تسجيل البصمة" في الجدول.
-                 </p>
+                 <p className="text-sm text-blue-700">يمكنك إضافة البصمة لاحقاً من الجدول.</p>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">رقم الطالب</label>
-                    <input required type="text" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.studentId} onChange={e => setFormData({...formData, studentId: e.target.value})} />
-                </div>
-                <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">الاسم الكامل</label>
-                    <input required type="text" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
-                </div>
-                <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">الصف الدراسي</label>
-                    <input type="text" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.grade} onChange={e => setFormData({...formData, grade: e.target.value})} />
-                </div>
-                <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">الفصل</label>
-                    <input type="text" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.classroom} onChange={e => setFormData({...formData, classroom: e.target.value})} />
-                </div>
-                <div className="col-span-2 space-y-2">
-                    <label className="text-sm font-medium text-slate-700">رقم الجوال</label>
-                    <input type="tel" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
-                </div>
+                <input required type="text" placeholder="رقم الطالب" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.studentId} onChange={e => setFormData({...formData, studentId: e.target.value})} />
+                <input required type="text" placeholder="الاسم" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                <input type="text" placeholder="الصف" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.grade} onChange={e => setFormData({...formData, grade: e.target.value})} />
+                <input type="text" placeholder="الفصل" className="w-full p-2 border border-slate-200 rounded-lg" value={formData.classroom} onChange={e => setFormData({...formData, classroom: e.target.value})} />
+                <input type="tel" placeholder="الجوال" className="w-full p-2 border border-slate-200 rounded-lg col-span-2" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
               </div>
-              <div className="pt-4">
-                <button type="submit" className="w-full py-2.5 bg-primary text-white rounded-lg hover:bg-indigo-700 font-medium">حفظ البيانات</button>
-              </div>
+              <div className="pt-4"><button type="submit" className="w-full py-2.5 bg-primary text-white rounded-lg hover:bg-indigo-700 font-medium">حفظ البيانات</button></div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Fingerprint Enrollment Modal */}
+      {/* Fingerprint Enrollment Modal - REAL MODE */}
       {isFingerprintModalOpen && selectedStudentForFP && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
             <div className="bg-slate-900 text-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-700 transition-all">
@@ -548,8 +439,7 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
                     {/* Status Icon */}
                     <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 relative transition-all duration-500
                         ${scanStatus === 'success' ? 'bg-green-500/20' : 
-                          scanStatus === 'waiting_finger' ? 'bg-amber-500/20' : 
-                          scanStatus === 'scanning' ? 'bg-blue-500/20' : 
+                          scanStatus === 'error' ? 'bg-red-500/20' : 
                           scanStatus === 'connecting' ? 'bg-indigo-500/20' : 'bg-slate-800'}
                     `}>
                         {scanStatus === 'idle' && <Fingerprint className="w-12 h-12 text-slate-400" />}
@@ -559,71 +449,64 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
                               <div className="absolute inset-0 border-4 border-indigo-500/30 rounded-full animate-[spin_3s_linear_infinite]"></div>
                            </>
                         )}
-                        {scanStatus === 'waiting_finger' && (
-                            <>
-                                <Fingerprint className="w-12 h-12 text-amber-400 animate-pulse" />
-                                <div className="absolute top-0 right-0 animate-bounce">
-                                    <ScanLine className="w-6 h-6 text-amber-200" />
-                                </div>
-                            </>
-                        )}
-                        {scanStatus === 'scanning' && (
-                            <>
-                                <Fingerprint className="w-12 h-12 text-blue-400" />
-                                <div className="absolute inset-0 border-4 border-blue-500/50 rounded-full animate-ping"></div>
-                            </>
-                        )}
+                        {scanStatus === 'error' && <AlertTriangle className="w-12 h-12 text-red-500" />}
                         {scanStatus === 'success' && <CheckCircle2 className="w-14 h-14 text-green-500 animate-in zoom-in" />}
                     </div>
 
                     <h3 className="text-xl font-bold mb-2">
-                        {scanStatus === 'idle' ? `تسجيل بصمة: ${selectedStudentForFP.name}` : getStatusText()}
+                        تسجيل بصمة: {selectedStudentForFP.name}
                     </h3>
-                    
-                    <p className={`text-sm mb-8 transition-colors ${
-                        scanStatus === 'waiting_finger' ? 'text-amber-300 font-bold' : 
-                        scanStatus === 'connecting' ? 'text-indigo-300' : 'text-slate-400'
-                    }`}>
-                        {getStatusText()}
-                    </p>
+
+                    {scanStatus === 'idle' && (
+                        <p className="text-slate-400 text-sm mb-6">
+                            تأكد من تشغيل جهاز البصمة وتشغيل برنامج "الوسيط الشامل" (Bridge Agent) على هذا الكمبيوتر قبل البدء.
+                        </p>
+                    )}
+
+                    {scanStatus === 'connecting' && (
+                        <div className="bg-indigo-900/30 border border-indigo-500/30 rounded-lg p-4 mb-6">
+                            <p className="text-indigo-300 font-bold mb-2 text-sm animate-pulse">جاري الاتصال بالجهاز...</p>
+                            <p className="text-xs text-slate-400">
+                                1. سيقوم الجهاز بإصدار صوت.<br/>
+                                2. ضع إصبع الطالب 3 مرات متتالية.<br/>
+                                3. انتظر حتى تظهر علامة النجاح هنا.
+                            </p>
+                        </div>
+                    )}
+
+                    {scanStatus === 'error' && (
+                        <div className="bg-red-900/30 border border-red-500/30 rounded-lg p-4 mb-6">
+                            <p className="text-red-400 font-bold mb-1 text-sm">فشل الاتصال</p>
+                            <p className="text-xs text-slate-300">{scanError}</p>
+                            <p className="text-xs text-slate-500 mt-2">تأكد من تشغيل الملف .bat</p>
+                        </div>
+                    )}
                     
                     <div className="space-y-3">
                         {scanStatus === 'idle' && (
-                            <button 
-                                onClick={simulateScan}
-                                className="w-full py-3 bg-primary rounded-xl font-bold hover:bg-indigo-600 transition-all flex items-center justify-center gap-2"
-                            >
-                                <ScanLine className="w-5 h-5" /> بدء عملية المسح
+                            <button onClick={startRealEnrollment} className="w-full py-3 bg-primary rounded-xl font-bold hover:bg-indigo-600 transition-all flex items-center justify-center gap-2">
+                                <ScanLine className="w-5 h-5" /> ابدأ التسجيل (من الجهاز)
+                            </button>
+                        )}
+                        
+                        {scanStatus === 'error' && (
+                            <button onClick={startRealEnrollment} className="w-full py-3 bg-slate-700 rounded-xl font-bold hover:bg-slate-600 transition-all">
+                                إعادة المحاولة
                             </button>
                         )}
 
-                        {(scanStatus === 'connecting' || scanStatus === 'waiting_finger' || scanStatus === 'scanning') && (
-                            <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-                                <div className={`h-full transition-all duration-[2000ms] ease-out rounded-full
-                                    ${scanStatus === 'connecting' ? 'w-1/4 bg-indigo-500' : 
-                                      scanStatus === 'waiting_finger' ? 'w-1/2 bg-amber-500' : 
-                                      'w-full bg-green-500'}`}
-                                ></div>
-                            </div>
-                        )}
-                        
                         {scanStatus === 'idle' && (
                             <div className="relative">
                                 <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" />
                                 <button className="w-full py-3 bg-slate-800 rounded-xl font-medium hover:bg-slate-700 transition-all flex items-center justify-center gap-2 border border-slate-700">
-                                    <Laptop className="w-5 h-5" />
-                                    رفع ملف بصمة (PC)
+                                    <Laptop className="w-5 h-5" /> رفع ملف (يدوي)
                                 </button>
                             </div>
                         )}
                     </div>
 
                     {scanStatus !== 'success' && (
-                        <button 
-                            onClick={() => setIsFingerprintModalOpen(false)}
-                            className="mt-6 text-slate-500 hover:text-white text-sm"
-                            disabled={scanStatus !== 'idle'}
-                        >
+                        <button onClick={() => setIsFingerprintModalOpen(false)} className="mt-6 text-slate-500 hover:text-white text-sm" disabled={scanStatus === 'connecting'}>
                             إلغاء العملية
                         </button>
                     )}
