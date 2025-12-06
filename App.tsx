@@ -76,15 +76,15 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex font-sans" dir="rtl">
+    <div className="h-screen bg-slate-50 flex font-sans overflow-hidden" dir="rtl">
       {/* Sidebar - Hidden when printing */}
       <Sidebar currentView={currentView} onNavigate={setCurrentView} />
       
       {/* Main Content */}
-      <main className="flex-1 md:mr-64 p-8 transition-all duration-300 print:mr-0 print:p-0 w-full overflow-x-hidden">
+      <main className="flex-1 md:mr-64 p-8 transition-all duration-300 print:mr-0 print:p-0 w-full overflow-x-hidden h-full overflow-y-auto scroll-smooth">
         
         {/* Header - Hidden when printing */}
-        <header className="flex justify-between items-center mb-8 no-print">
+        <header className="flex justify-between items-center mb-8 no-print sticky top-0 z-10 bg-slate-50/95 backdrop-blur-sm py-2">
             <div>
                 <h1 className="text-sm text-slate-500 font-medium">نظام الإدارة المدرسية</h1>
                 <p className="text-2xl text-slate-800 font-bold tracking-tight">{schoolName}</p>
@@ -101,6 +101,9 @@ const App: React.FC = () => {
         </header>
 
         {renderContent()}
+        
+        {/* Bottom spacer to ensure last element is not cut off */}
+        <div className="h-10"></div>
       </main>
     </div>
   );

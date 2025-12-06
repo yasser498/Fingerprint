@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { Plus, Search, FileDown, FileUp, Trash2, Fingerprint, ScanLine, Laptop, Save, X, AlertCircle } from 'lucide-react';
+import { Plus, Search, FileDown, FileUp, Trash2, Fingerprint, ScanLine, Laptop, Save, X, AlertCircle, Loader2, CheckCircle2, Wifi } from 'lucide-react';
 import { Student } from '../types';
+import { StorageService } from '../services/storageService';
 
 interface StudentManagerProps {
   students: Student[];
@@ -16,7 +17,10 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
   const [isFingerprintModalOpen, setIsFingerprintModalOpen] = useState(false);
   const [selectedStudentForFP, setSelectedStudentForFP] = useState<Student | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [scanning, setScanning] = useState(false);
+  const settings = StorageService.getSettings();
+  
+  // Scanning State: 'idle' | 'connecting' | 'waiting_finger' | 'scanning' | 'success'
+  const [scanStatus, setScanStatus] = useState<'idle' | 'connecting' | 'waiting_finger' | 'scanning' | 'success'>('idle');
 
   // New Student Form State
   const [formData, setFormData] = useState<Partial<Student>>({
@@ -111,24 +115,51 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
   const openFingerprintModal = (student: Student) => {
     setSelectedStudentForFP(student);
     setIsFingerprintModalOpen(true);
-    setScanning(false);
+    setScanStatus('idle');
   };
 
   const simulateScan = () => {
-    setScanning(true);
+    // Step 1: Connecting
+    setScanStatus('connecting');
+
     setTimeout(() => {
-        setScanning(false);
-        if (selectedStudentForFP) {
-            const updated = {
-                ...selectedStudentForFP,
-                fingerprintId: `FP_${selectedStudentForFP.studentId}`,
-                fingerprintData: 'mock_hash_xyz_123'
-            };
-            onUpdate(updated);
-            setIsFingerprintModalOpen(false);
-            alert('تم تسجيل البصمة وربطها بالجهاز بنجاح');
-        }
-    }, 2500);
+        // Step 2: Waiting for finger
+        setScanStatus('waiting_finger');
+        
+        setTimeout(() => {
+            // Step 3: Scanning
+            setScanStatus('scanning');
+
+            setTimeout(() => {
+                // Step 4: Success
+                if (selectedStudentForFP) {
+                    const updated = {
+                        ...selectedStudentForFP,
+                        fingerprintId: `FP_${selectedStudentForFP.studentId}`,
+                        fingerprintData: 'mock_hash_xyz_123'
+                    };
+                    onUpdate(updated);
+                    setScanStatus('success');
+
+                    // Close modal after success
+                    setTimeout(() => {
+                        setIsFingerprintModalOpen(false);
+                        setScanStatus('idle');
+                    }, 1500);
+                }
+            }, 2000); // Scanning takes 2 seconds
+        }, 3000); // Waiting for finger takes 3 seconds (gives user time to "place" it)
+    }, 2000); // Connecting takes 2 seconds
+  };
+
+  const getStatusText = () => {
+      switch(scanStatus) {
+          case 'connecting': return `جاري الاتصال بجهاز البصمة (${settings.deviceIp})...`;
+          case 'waiting_finger': return 'يرجى وضع إصبع الطالب على الجهاز الآن...';
+          case 'scanning': return 'جاري مسح البصمة ومعالجة البيانات...';
+          case 'success': return 'تم تسجيل البصمة بنجاح!';
+          default: return 'قم بوضع إصبع الطالب على جهاز الماسح الضوئي المتصل';
+      }
   };
 
   return (
@@ -287,43 +318,91 @@ const StudentManager: React.FC<StudentManagerProps> = ({ students, onAdd, onDele
       {/* Fingerprint Enrollment Modal */}
       {isFingerprintModalOpen && selectedStudentForFP && (
          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-            <div className="bg-slate-900 text-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-700">
+            <div className="bg-slate-900 text-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-700 transition-all">
                 <div className="p-6 text-center">
-                    <div className="w-20 h-20 bg-primary/20 rounded-full flex items-center justify-center mx-auto mb-4 relative">
-                        <Fingerprint className={`w-10 h-10 text-primary ${scanning ? 'animate-ping opacity-50' : ''}`} />
-                        {scanning && <div className="absolute inset-0 border-2 border-primary rounded-full animate-ping"></div>}
-                    </div>
-                    <h3 className="text-xl font-bold mb-2">تسجيل بصمة: {selectedStudentForFP.name}</h3>
-                    <p className="text-slate-400 text-sm mb-8">قم بوضع إصبع الطالب على جهاز الماسح الضوئي المتصل أو ارفع ملف البصمة</p>
                     
-                    <div className="space-y-3">
-                        <button 
-                            onClick={simulateScan}
-                            disabled={scanning}
-                            className="w-full py-3 bg-primary rounded-xl font-bold hover:bg-indigo-600 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                        >
-                            {scanning ? (
-                                <>جاري المسح...</>
-                            ) : (
-                                <><ScanLine /> بدء المسح من الجهاز</>
-                            )}
-                        </button>
-                        
-                        <div className="relative">
-                             <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" />
-                             <button className="w-full py-3 bg-slate-800 rounded-xl font-medium hover:bg-slate-700 transition-all flex items-center justify-center gap-2 border border-slate-700">
-                                <Laptop className="w-5 h-5" />
-                                رفع ملف بصمة (PC)
-                             </button>
-                        </div>
+                    {/* Status Icon */}
+                    <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 relative transition-all duration-500
+                        ${scanStatus === 'success' ? 'bg-green-500/20' : 
+                          scanStatus === 'waiting_finger' ? 'bg-amber-500/20' : 
+                          scanStatus === 'scanning' ? 'bg-blue-500/20' : 
+                          scanStatus === 'connecting' ? 'bg-indigo-500/20' : 'bg-slate-800'}
+                    `}>
+                        {scanStatus === 'idle' && <Fingerprint className="w-12 h-12 text-slate-400" />}
+                        {scanStatus === 'connecting' && (
+                           <>
+                              <Wifi className="w-10 h-10 text-indigo-400 animate-pulse" />
+                              <div className="absolute inset-0 border-4 border-indigo-500/30 rounded-full animate-[spin_3s_linear_infinite]"></div>
+                           </>
+                        )}
+                        {scanStatus === 'waiting_finger' && (
+                            <>
+                                <Fingerprint className="w-12 h-12 text-amber-400 animate-pulse" />
+                                <div className="absolute top-0 right-0 animate-bounce">
+                                    <ScanLine className="w-6 h-6 text-amber-200" />
+                                </div>
+                            </>
+                        )}
+                        {scanStatus === 'scanning' && (
+                            <>
+                                <Fingerprint className="w-12 h-12 text-blue-400" />
+                                <div className="absolute inset-0 border-4 border-blue-500/50 rounded-full animate-ping"></div>
+                            </>
+                        )}
+                        {scanStatus === 'success' && <CheckCircle2 className="w-14 h-14 text-green-500 animate-in zoom-in" />}
                     </div>
 
-                    <button 
-                        onClick={() => setIsFingerprintModalOpen(false)}
-                        className="mt-6 text-slate-500 hover:text-white text-sm"
-                    >
-                        إلغاء العملية
-                    </button>
+                    <h3 className="text-xl font-bold mb-2">
+                        {scanStatus === 'idle' ? `تسجيل بصمة: ${selectedStudentForFP.name}` : getStatusText()}
+                    </h3>
+                    
+                    <p className={`text-sm mb-8 transition-colors ${
+                        scanStatus === 'waiting_finger' ? 'text-amber-300 font-bold' : 
+                        scanStatus === 'connecting' ? 'text-indigo-300' : 'text-slate-400'
+                    }`}>
+                        {getStatusText()}
+                    </p>
+                    
+                    <div className="space-y-3">
+                        {scanStatus === 'idle' && (
+                            <button 
+                                onClick={simulateScan}
+                                className="w-full py-3 bg-primary rounded-xl font-bold hover:bg-indigo-600 transition-all flex items-center justify-center gap-2"
+                            >
+                                <ScanLine className="w-5 h-5" /> بدء عملية المسح
+                            </button>
+                        )}
+
+                        {(scanStatus === 'connecting' || scanStatus === 'waiting_finger' || scanStatus === 'scanning') && (
+                            <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                                <div className={`h-full transition-all duration-[2000ms] ease-out rounded-full
+                                    ${scanStatus === 'connecting' ? 'w-1/4 bg-indigo-500' : 
+                                      scanStatus === 'waiting_finger' ? 'w-1/2 bg-amber-500' : 
+                                      'w-full bg-green-500'}`}
+                                ></div>
+                            </div>
+                        )}
+                        
+                        {scanStatus === 'idle' && (
+                            <div className="relative">
+                                <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" />
+                                <button className="w-full py-3 bg-slate-800 rounded-xl font-medium hover:bg-slate-700 transition-all flex items-center justify-center gap-2 border border-slate-700">
+                                    <Laptop className="w-5 h-5" />
+                                    رفع ملف بصمة (PC)
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    {scanStatus !== 'success' && (
+                        <button 
+                            onClick={() => setIsFingerprintModalOpen(false)}
+                            className="mt-6 text-slate-500 hover:text-white text-sm"
+                            disabled={scanStatus !== 'idle'}
+                        >
+                            إلغاء العملية
+                        </button>
+                    )}
                 </div>
             </div>
          </div>
