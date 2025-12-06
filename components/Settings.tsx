@@ -100,17 +100,163 @@ const Settings: React.FC = () => {
   };
 
   const handleDownloadAgent = () => {
+    // 1. Prepare server.js content (Pure JS)
+    const serverJsContent = `
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const fs = require('fs');
+const path = require('path');
+const ZKLib = require('node-zklib');
+const { Client, LocalAuth } = require('whatsapp-web.js');
+
+const app = express();
+const PORT = 3001;
+
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// --- WHATSAPP SETUP ---
+let waClient = null, waQR = null, waStatus = 'DISCONNECTED', waInfo = null;
+
+function initWhatsApp() {
+    console.log('[WhatsApp] Initializing...');
+    try {
+        waClient = new Client({
+            authStrategy: new LocalAuth(),
+            puppeteer: { headless: true, args: ['--no-sandbox'] }
+        });
+
+        waClient.on('qr', (qr) => { 
+            waQR = qr; 
+            waStatus = 'QR_READY'; 
+            console.log('[WhatsApp] QR Generated');
+        });
+
+        waClient.on('ready', () => { 
+            console.log('[WhatsApp] Ready!'); 
+            waStatus = 'CONNECTED'; 
+            waQR = null; 
+            waInfo = waClient.info; 
+        });
+
+        waClient.on('authenticated', () => {
+            console.log('[WhatsApp] Authenticated');
+        });
+
+        waClient.on('disconnected', (reason) => { 
+            console.log('[WhatsApp] Disconnected:', reason);
+            waStatus = 'DISCONNECTED'; 
+            // Optional: waClient.initialize(); 
+        });
+
+        waClient.initialize();
+    } catch (err) {
+        console.error('[WhatsApp] Init Error:', err);
+    }
+}
+
+initWhatsApp();
+
+// --- ZK HELPER ---
+async function withZK(ip, port, callback) {
+    const zk = new ZKLib(ip, port, 10000, 4000);
+    try {
+        await zk.createSocket();
+        const result = await callback(zk);
+        try { await zk.disconnect(); } catch(e){}
+        return result;
+    } catch (e) {
+        try { await zk.disconnect(); } catch(e){}
+        throw e;
+    }
+}
+
+// --- ROUTES ---
+app.get('/logs', async (req, res) => {
+    const { ip, port } = req.query;
+    if(!ip) return res.json({success:false});
+    try {
+        const logs = await withZK(ip, port || 4370, async (zk) => await zk.getAttendances());
+        res.json({ success: true, data: logs });
+    } catch(e) { 
+        console.error('ZK Logs Error:', e);
+        res.status(500).json({success: false, err: e.message}); 
+    }
+});
+
+app.get('/enroll', async (req, res) => {
+    const { ip, port, id } = req.query;
+    try {
+        // Simple registration command simulation or real command if library supports
+        // ZKLib implementation varies. We check connection mostly here.
+        await withZK(ip, port || 4370, async (zk) => {
+             // ensure user exists
+             await zk.setUser(id, '1234', 'User ' + id, ''); 
+        });
+        res.json({ success: true, template: 'FP_' + id });
+    } catch (e) { 
+        console.error('Enroll Error:', e);
+        res.status(500).json({ success: false, message: e.message }); 
+    }
+});
+
+app.get('/whatsapp/status', (req, res) => {
+    res.json({ 
+        connected: waStatus === 'CONNECTED', 
+        qr: waQR, 
+        info: waInfo,
+        status: waStatus
+    });
+});
+
+app.post('/whatsapp/send', async (req, res) => {
+    if (waStatus !== 'CONNECTED') return res.status(400).json({success: false, message: 'Not connected'});
+    try {
+        const chatId = req.body.phone.replace(/[^0-9]/g, '') + '@c.us';
+        await waClient.sendMessage(chatId, req.body.message);
+        res.json({ success: true });
+    } catch (e) { 
+        res.status(500).json({ success: false, error: e.message }); 
+    }
+});
+
+app.get('/status', (req, res) => res.json({ status: 'running' }));
+
+app.listen(PORT, () => console.log('Bridge Agent Running on port ' + PORT));
+`;
+
+    // 2. Prepare package.json content
+    const packageJsonContent = JSON.stringify({
+        name: "bridge-agent",
+        version: "4.0.0",
+        main: "server.js",
+        dependencies: {
+            "express": "^4.18.2",
+            "cors": "^2.8.5",
+            "body-parser": "^1.20.2",
+            "node-zklib": "^5.0.0",
+            "whatsapp-web.js": "^1.23.0",
+            "qrcode-terminal": "^0.12.0"
+        }
+    }, null, 2);
+
+    // 3. Convert to Base64 (To allow safe writing via Batch)
+    const b64Server = btoa(serverJsContent);
+    const b64Package = btoa(packageJsonContent);
+
+    // 4. Create the Batch File Content
     const batContent = `@echo off
 setlocal EnableDelayedExpansion
-title Fingerprint & WhatsApp Bridge Agent (All-in-One)
+title Fingerprint & WhatsApp Bridge Agent (Safe Mode)
 color 0A
 cls
 echo ===================================================
-echo   System Agent v4.0 (Merged Mode Ready)
+echo   System Agent v4.1 (Safe Install)
 echo ===================================================
 echo   1. Hardware Bridge (Fingerprint)
 echo   2. WhatsApp Integration
-echo   3. Web Server (Optional for hosting the app)
 echo ===================================================
 echo.
 
@@ -128,106 +274,31 @@ if %errorlevel% neq 0 (
 if not exist "BridgeAgent" mkdir BridgeAgent
 cd BridgeAgent
 
-:: 3. Create package.json
-if not exist package.json (
-    echo {"name":"bridge-agent","version":"4.0.0","dependencies":{"express":"^4.18.2","cors":"^2.8.5","body-parser":"^1.20.2","node-zklib":"^5.0.0","whatsapp-web.js":"^1.23.0","qrcode-terminal":"^0.12.0"}} > package.json
+:: 3. Create Files using Base64 Decode (Prevents Syntax Errors)
+echo [3] Creating application files...
+
+echo ${b64Package} > package.b64
+certutil -decode package.b64 package.json >nul 2>&1
+del package.b64
+
+echo ${b64Server} > server.b64
+certutil -decode server.b64 server.js >nul 2>&1
+del server.b64
+
+:: 4. Install Dependencies
+if not exist node_modules (
+    echo [4] Installing libraries (First time only)...
+    call npm install
 )
 
-:: 4. Create Universal Server
-(
-echo const express = require('express');
-echo const cors = require('cors');
-echo const bodyParser = require('body-parser');
-echo const fs = require('fs');
-echo const path = require('path');
-echo const ZKLib = require('node-zklib');
-echo const { Client, LocalAuth } = require('whatsapp-web.js');
-echo.
-echo const app = express();
-echo const PORT = 3001;
-echo.
-echo app.use(cors());
-echo app.use(bodyParser.json());
-echo.
-echo // --- MERGED MODE: Serve Static Files (If built) ---
-echo // If you put the React 'build' or 'dist' folder here, this agent becomes the web server.
-echo app.use(express.static(path.join(__dirname, 'public')));
-echo.
-echo // --- WHATSAPP SETUP ---
-echo let waClient = null, waQR = null, waStatus = 'DISCONNECTED', waInfo = null;
-echo.
-echo function initWhatsApp() {
-echo     console.log('[WhatsApp] Initializing...');
-echo     waClient = new Client({
-echo         authStrategy: new LocalAuth(),
-echo         puppeteer: { headless: true, args: ['--no-sandbox'] }
-echo     });
-echo     waClient.on('qr', (qr) =^> { waQR = qr; waStatus = 'QR_READY'; });
-echo     waClient.on('ready', () =^> { 
-echo         console.log('[WhatsApp] Ready!'); 
-echo         waStatus = 'CONNECTED'; waQR = null; waInfo = waClient.info; 
-echo     });
-echo     waClient.on('disconnected', () =^> { waStatus = 'DISCONNECTED'; waClient.initialize(); });
-echo     waClient.initialize();
-echo }
-echo initWhatsApp();
-echo.
-echo // --- ZK HELPER ---
-echo async function withZK(ip, port, callback) {
-echo     const zk = new ZKLib(ip, port, 10000, 4000);
-echo     try {
-echo         await zk.createSocket();
-echo         const result = await callback(zk);
-echo         await zk.disconnect();
-echo         return result;
-echo     } catch (e) {
-echo         try { await zk.disconnect(); } catch(e){}
-echo         throw e;
-echo     }
-echo }
-echo.
-echo // --- ROUTES ---
-echo app.get('/logs', async (req, res) =^> {
-echo     const { ip, port } = req.query;
-echo     if(!ip) return res.json({success:false});
-echo     try {
-echo         const logs = await withZK(ip, port || 4370, async (zk) =^> await zk.getAttendances());
-echo         res.json({ success: true, data: logs });
-echo     } catch(e) { res.status(500).json({success: false, err: e.message}); }
-echo });
-echo.
-echo app.get('/enroll', async (req, res) =^> {
-echo     const { ip, port, id } = req.query;
-echo     try {
-echo         await withZK(ip, port || 4370, async (zk) =^> {
-echo              await zk.setUser(id, '1234', 'User ' + id, ''); 
-echo         });
-echo         res.json({ success: true, template: 'FP_' + id });
-echo     } catch (e) { res.status(500).json({ success: false }); }
-echo });
-echo.
-echo app.get('/whatsapp/status', (req, res) =^> res.json({ connected: waStatus === 'CONNECTED', qr: waQR, info: waInfo }));
-echo.
-echo app.post('/whatsapp/send', async (req, res) =^> {
-echo     if (waStatus !== 'CONNECTED') return res.status(400).json({success: false});
-echo     try {
-echo         const chatId = req.body.phone.replace(/[^0-9]/g, '') + '@c.us';
-echo         await waClient.sendMessage(chatId, req.body.message);
-echo         res.json({ success: true });
-echo     } catch (e) { res.status(500).json({ success: false }); }
-echo });
-echo.
-echo app.get('/status', (req, res) =^> res.json({ status: 'running' }));
-echo.
-echo app.listen(PORT, () =^> console.log('Agent Running on port ' + PORT));
-) > server.js
-
-:: 5. Install Dependencies
-if not exist node_modules call npm install
-
-:: 6. Run
+:: 5. Run
 cls
-echo Agent is Running... Keep this window open.
+color 0B
+echo ===================================================
+echo   Bridge Agent is Running
+echo ===================================================
+echo   Log Output:
+echo.
 node server.js
 pause
 `;
@@ -236,7 +307,7 @@ pause
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'مشغل_النظام_الشامل.bat'; 
+    a.download = 'مشغل_النظام_الشامل_مصحح.bat'; 
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -513,7 +584,7 @@ pause
                             className="flex items-center gap-3 px-8 py-4 bg-green-600 hover:bg-green-500 text-white rounded-xl font-bold shadow-lg shadow-green-900/50 hover:scale-105 active:scale-95 transition-all w-full md:w-auto justify-center"
                          >
                             <Download className="w-6 h-6" />
-                            تحميل المشغل (bat)
+                            تحميل المشغل (مصحح)
                          </button>
                      </div>
                  </div>
