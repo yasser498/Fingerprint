@@ -141,14 +141,10 @@ function initWhatsApp() {
             waInfo = waClient.info; 
         });
 
-        waClient.on('authenticated', () => {
-            console.log('[WhatsApp] Authenticated');
-        });
-
         waClient.on('disconnected', (reason) => { 
             console.log('[WhatsApp] Disconnected:', reason);
             waStatus = 'DISCONNECTED'; 
-            // Optional: waClient.initialize(); 
+            waClient.initialize(); 
         });
 
         waClient.initialize();
@@ -181,7 +177,6 @@ app.get('/logs', async (req, res) => {
         const logs = await withZK(ip, port || 4370, async (zk) => await zk.getAttendances());
         res.json({ success: true, data: logs });
     } catch(e) { 
-        console.error('ZK Logs Error:', e);
         res.status(500).json({success: false, err: e.message}); 
     }
 });
@@ -189,26 +184,17 @@ app.get('/logs', async (req, res) => {
 app.get('/enroll', async (req, res) => {
     const { ip, port, id } = req.query;
     try {
-        // Simple registration command simulation or real command if library supports
-        // ZKLib implementation varies. We check connection mostly here.
         await withZK(ip, port || 4370, async (zk) => {
-             // ensure user exists
              await zk.setUser(id, '1234', 'User ' + id, ''); 
         });
         res.json({ success: true, template: 'FP_' + id });
     } catch (e) { 
-        console.error('Enroll Error:', e);
         res.status(500).json({ success: false, message: e.message }); 
     }
 });
 
 app.get('/whatsapp/status', (req, res) => {
-    res.json({ 
-        connected: waStatus === 'CONNECTED', 
-        qr: waQR, 
-        info: waInfo,
-        status: waStatus
-    });
+    res.json({ connected: waStatus === 'CONNECTED', qr: waQR, info: waInfo, status: waStatus });
 });
 
 app.post('/whatsapp/send', async (req, res) => {
@@ -223,8 +209,7 @@ app.post('/whatsapp/send', async (req, res) => {
 });
 
 app.get('/status', (req, res) => res.json({ status: 'running' }));
-
-app.listen(PORT, () => console.log('Bridge Agent Running on port ' + PORT));
+app.listen(PORT, () => console.log('Agent Running on ' + PORT));
 `;
 
     // 2. Prepare package.json content
@@ -242,64 +227,103 @@ app.listen(PORT, () => console.log('Bridge Agent Running on port ' + PORT));
         }
     }, null, 2);
 
-    // 3. Convert to Base64 (To allow safe writing via Batch)
+    // 3. Convert to Base64
     const b64Server = btoa(serverJsContent);
     const b64Package = btoa(packageJsonContent);
 
     // 4. Create the Batch File Content
+    // KEY FIX: We use setlocal DisableDelayedExpansion to safely echo Base64 strings
+    // AND we use a try/catch style structure with pauses.
     const batContent = `@echo off
-setlocal EnableDelayedExpansion
-title Fingerprint & WhatsApp Bridge Agent (Safe Mode)
+setlocal DisableDelayedExpansion
+title Fingerprint & WhatsApp Bridge Agent (Stable)
 color 0A
 cls
 echo ===================================================
-echo   System Agent v4.1 (Safe Install)
+echo   System Agent v4.2 (Stable)
 echo ===================================================
-echo   1. Hardware Bridge (Fingerprint)
-echo   2. WhatsApp Integration
+echo   Please wait while we set everything up...
 echo ===================================================
 echo.
 
 :: 1. Check for Node.js
-node -v >nul 2>&1
+echo [1/5] Checking Node.js...
+where node >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [!] Node.js is NOT installed. Downloading...
+    echo [!] Node.js is NOT installed.
+    echo     Downloading Node.js Installer...
     powershell -Command "Invoke-WebRequest -Uri 'https://nodejs.org/dist/v18.19.0/node-v18.19.0-x64.msi' -OutFile 'node_installer.msi'"
-    start /wait msiexec /i node_installer.msi /qn
-    del node_installer.msi
-    set "PATH=%PATH%;%ProgramFiles%\\nodejs"
+    if exist node_installer.msi (
+        echo     Installing Node.js (Please click Next/Install)...
+        start /wait msiexec /i node_installer.msi /qn
+        del node_installer.msi
+        echo     Node.js installed. You might need to restart this script.
+    ) else (
+        echo [!] Failed to download Node.js. Please install it manually.
+        pause
+        exit
+    )
+) else (
+    echo     Node.js is ready.
 )
 
 :: 2. Setup Directory
 if not exist "BridgeAgent" mkdir BridgeAgent
 cd BridgeAgent
 
-:: 3. Create Files using Base64 Decode (Prevents Syntax Errors)
-echo [3] Creating application files...
+:: 3. Create Files (Safe Write Mode)
+echo [2/5] Creating configuration files...
 
-echo ${b64Package} > package.b64
+:: Write package.json
+(
+echo ${b64Package}
+) > package.b64
 certutil -decode package.b64 package.json >nul 2>&1
 del package.b64
 
-echo ${b64Server} > server.b64
+:: Write server.js
+(
+echo ${b64Server}
+) > server.b64
 certutil -decode server.b64 server.js >nul 2>&1
 del server.b64
 
+if not exist server.js (
+    echo [!] Error: Failed to create server file.
+    pause
+    exit
+)
+
 :: 4. Install Dependencies
+echo [3/5] Checking libraries...
 if not exist node_modules (
-    echo [4] Installing libraries (First time only)...
+    echo     Installing dependencies (First time may take 2-5 mins)...
     call npm install
+    if %errorlevel% neq 0 (
+        echo [!] npm install failed. Check your internet connection.
+        pause
+        exit
+    )
 )
 
 :: 5. Run
 cls
 color 0B
 echo ===================================================
-echo   Bridge Agent is Running
+echo   Bridge Agent is Running Successfully
 echo ===================================================
-echo   Log Output:
+echo   Do NOT close this black window.
+echo   Minimize it to keep the system working.
+echo ===================================================
 echo.
-node server.js
+call node server.js
+if %errorlevel% neq 0 (
+    color 0C
+    echo.
+    echo [!] The server crashed or stopped.
+    echo [!] Error Code: %errorlevel%
+    pause
+)
 pause
 `;
 
@@ -307,7 +331,7 @@ pause
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'مشغل_النظام_الشامل_مصحح.bat'; 
+    a.download = 'مشغل_النظام_الشامل_v2.bat'; 
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -584,7 +608,7 @@ pause
                             className="flex items-center gap-3 px-8 py-4 bg-green-600 hover:bg-green-500 text-white rounded-xl font-bold shadow-lg shadow-green-900/50 hover:scale-105 active:scale-95 transition-all w-full md:w-auto justify-center"
                          >
                             <Download className="w-6 h-6" />
-                            تحميل المشغل (مصحح)
+                            تحميل المشغل (مصحح v2)
                          </button>
                      </div>
                  </div>
