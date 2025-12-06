@@ -1,4 +1,4 @@
-import { Student, AttendanceRecord, AppSettings } from '../types';
+import { Student, AttendanceRecord, AppSettings, FingerprintDevice } from '../types';
 
 const KEYS = {
   STUDENTS: 'fp_sys_students',
@@ -20,8 +20,15 @@ const initialSettings: AppSettings = {
   startTime: '07:00',
   lateThreshold: '07:30',
   endTime: '13:00',
-  deviceIp: '192.168.1.201',
-  devicePort: 4370
+  devices: [
+    { 
+        id: 'dev_1', 
+        name: 'البوابة الرئيسية (ZK)', 
+        type: 'zk_direct', 
+        ip: '192.168.1.201', 
+        port: 4370 
+    }
+  ]
 };
 
 export const StorageService = {
@@ -45,9 +52,20 @@ export const StorageService = {
     localStorage.setItem(KEYS.STUDENTS, JSON.stringify(students));
   },
 
+  // BULK SAVE (For Smart Sync)
+  setStudents: (students: Student[]) => {
+      localStorage.setItem(KEYS.STUDENTS, JSON.stringify(students));
+  },
+
   deleteStudent: (id: string) => {
     const students = StorageService.getStudents().filter(s => s.id !== id);
     localStorage.setItem(KEYS.STUDENTS, JSON.stringify(students));
+  },
+
+  // BULK DELETE
+  deleteStudentsBulk: (ids: string[]) => {
+      const students = StorageService.getStudents().filter(s => !ids.includes(s.id));
+      localStorage.setItem(KEYS.STUDENTS, JSON.stringify(students));
   },
 
   getAttendance: (): AttendanceRecord[] => {
@@ -66,61 +84,115 @@ export const StorageService = {
     if (!data) {
         return initialSettings;
     }
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Migration: ensure devices array exists if upgrading from old version
+    if (!parsed.devices) {
+        return { 
+            ...initialSettings, 
+            ...parsed, 
+            devices: initialSettings.devices 
+        };
+    }
+    return parsed;
   },
 
   saveSettings: (settings: AppSettings) => {
     localStorage.setItem(KEYS.SETTINGS, JSON.stringify(settings));
   },
 
-  // Mock function to simulate "Scanning" attendance for demo purposes
-  simulateAttendance: () => {
-    const students = StorageService.getStudents();
-    const logs = StorageService.getAttendance();
-    const today = new Date().toISOString().split('T')[0];
+  // MULTI-DEVICE SYNC
+  syncWithDevice: async () => {
     const settings = StorageService.getSettings();
-    
-    // Check if we already have records for today to avoid duplicates in demo
-    const hasRecords = logs.some(l => l.date === today);
-    if (hasRecords) return;
+    const students = StorageService.getStudents();
+    let existingLogs = StorageService.getAttendance(); // Let is mutable
+    let totalNew = 0;
 
-    const [startH, startM] = settings.startTime.split(':').map(Number);
-    const [lateH, lateM] = settings.lateThreshold.split(':').map(Number);
+    // Loop through all configured devices
+    for (const device of settings.devices) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 sec timeout per device
 
-    const newLogs: AttendanceRecord[] = students.map((s, idx) => {
-      // Logic relies on random for demo
-      const rand = Math.random();
-      let status: 'present' | 'late' | 'absent' = 'present';
-      
-      if (rand > 0.85) status = 'absent';
-      else if (rand > 0.65) status = 'late';
+            // Build URL based on device config
+            let url = `http://localhost:3001/logs?mode=${device.type}`;
+            if (device.type === 'zk_direct') {
+                if (!device.ip) continue;
+                url += `&ip=${device.ip}&port=${device.port || 4370}`;
+            } else {
+                if (!device.filePath) continue;
+                url += `&path=${encodeURIComponent(device.filePath)}`;
+            }
 
-      if (status === 'absent') return null; // Don't log if absent in this simple model
+            const response = await fetch(url, {
+                method: 'GET',
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
 
-      // Generate realistic time based on status
-      let logTime = new Date();
-      if (status === 'late') {
-         // Random minutes between 1 and 60 after late threshold
-         const delay = Math.floor(Math.random() * 55) + 1;
-         logTime.setHours(lateH, lateM + delay, 0); 
-      } else {
-         // Random minutes between start and late threshold
-         // Simplified: Just 15 mins after start
-         logTime.setHours(startH, startM + Math.floor(Math.random() * 25), 0);
-      }
+            if (!response.ok) continue;
 
-      return {
-        id: Math.random().toString(36).substr(2, 9),
-        studentId: s.id,
-        studentName: s.name,
-        timestamp: logTime.toISOString(),
-        date: today,
-        status: status,
-        deviceId: `DEV_0${(idx % 2) + 1}`
-      };
-    }).filter(Boolean) as AttendanceRecord[];
+            const result = await response.json();
+            
+            if (result.success && Array.isArray(result.data)) {
+                const rawLogs = result.data; 
+                const newRecords: AttendanceRecord[] = [];
 
-    localStorage.setItem(KEYS.ATTENDANCE, JSON.stringify([...logs, ...newLogs]));
+                for (const log of rawLogs) {
+                    const student = students.find(s => s.studentId == log.id);
+                    
+                    if (student) {
+                        const logDate = new Date(log.timestamp);
+                        if (isNaN(logDate.getTime())) continue;
+
+                        const dateStr = logDate.toISOString().split('T')[0];
+                        // Unique ID includes device ID now to prevent collisions if timestamps match exactly
+                        const recordId = `${student.id}_${logDate.getTime()}`; 
+
+                        const exists = existingLogs.some(r => r.id === recordId);
+                        
+                        if (!exists) {
+                            const timeStr = logDate.toTimeString().split(' ')[0];
+                            const [h, m] = timeStr.split(':').map(Number);
+                            const [lateH, lateM] = settings.lateThreshold.split(':').map(Number);
+                            
+                            let status: 'present' | 'late' = 'present';
+                            if (h > lateH || (h === lateH && m > lateM)) {
+                                status = 'late';
+                            }
+
+                            newRecords.push({
+                                id: recordId,
+                                studentId: student.id,
+                                studentName: student.name,
+                                timestamp: log.timestamp,
+                                date: dateStr,
+                                status: status,
+                                deviceId: device.name // Store the friendly name
+                            });
+                        }
+                    }
+                }
+
+                if (newRecords.length > 0) {
+                    existingLogs = [...existingLogs, ...newRecords];
+                    totalNew += newRecords.length;
+                    
+                    // Update last sync time for this device (optional, in memory only for now unless saved)
+                    device.lastSync = new Date().toISOString();
+                }
+            }
+
+        } catch (error) {
+            console.debug(`Skipping device ${device.name}:`, error);
+        }
+    }
+
+    if (totalNew > 0) {
+        localStorage.setItem(KEYS.ATTENDANCE, JSON.stringify(existingLogs));
+        // Save settings to update lastSync times if we implemented that fully
+        StorageService.saveSettings(settings);
+        console.log(`Synced total ${totalNew} new records.`);
+    }
   },
   
   clearAll: () => {

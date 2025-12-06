@@ -1,13 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Database, Copy, Check, Trash, Clock, Save, Server, ShieldAlert, Settings2, Terminal, Play, AlertCircle, Download, FileJson } from 'lucide-react';
+import { Database, Copy, Check, Trash, Clock, Save, Server, ShieldAlert, Settings2, Terminal, Play, AlertCircle, Download, FileJson, FileText, Network, Plus, X } from 'lucide-react';
 import { generateSQLSchema } from '../services/sqlGenerator';
 import { StorageService } from '../services/storageService';
-import { AppSettings } from '../types';
+import { AppSettings, FingerprintDevice } from '../types';
 
 const Settings: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState<'general' | 'device' | 'database'>('general');
   const [settings, setSettings] = useState<AppSettings>(StorageService.getSettings());
+  
+  // State for adding/editing a device
+  const [isAddingDevice, setIsAddingDevice] = useState(false);
+  const [newDevice, setNewDevice] = useState<Partial<FingerprintDevice>>({
+      type: 'zk_direct',
+      name: '',
+      port: 4370,
+      ip: '',
+      filePath: ''
+  });
+
   const sql = generateSQLSchema();
 
   useEffect(() => {
@@ -26,23 +37,52 @@ const Settings: React.FC = () => {
     alert('تم حفظ الإعدادات بنجاح');
   };
 
+  const handleAddDevice = (e: React.FormEvent) => {
+      e.preventDefault();
+      if(!newDevice.name) return;
+
+      const deviceToAdd: FingerprintDevice = {
+          id: Math.random().toString(36).substr(2, 9),
+          name: newDevice.name,
+          type: newDevice.type as any,
+          ip: newDevice.ip,
+          port: newDevice.port,
+          filePath: newDevice.filePath,
+          lastSync: '-'
+      };
+
+      const updatedDevices = [...settings.devices, deviceToAdd];
+      setSettings({...settings, devices: updatedDevices});
+      StorageService.saveSettings({...settings, devices: updatedDevices});
+      
+      setIsAddingDevice(false);
+      setNewDevice({ type: 'zk_direct', name: '', port: 4370, ip: '', filePath: '' });
+  };
+
+  const handleDeleteDevice = (id: string) => {
+      if(confirm('هل أنت متأكد من حذف هذا الجهاز؟')) {
+          const updatedDevices = settings.devices.filter(d => d.id !== id);
+          setSettings({...settings, devices: updatedDevices});
+          StorageService.saveSettings({...settings, devices: updatedDevices});
+      }
+  };
+
   const handleReset = () => {
     if (confirm('هل أنت متأكد من حذف جميع البيانات؟ لا يمكن التراجع عن هذا الإجراء.')) {
         StorageService.clearAll();
     }
   };
 
-  // Function to generate and download the .bat file
   const handleDownloadAgent = () => {
-    // This script is now a full installer.
-    // It checks for Node.js, downloads and installs it if missing, then sets up the server.
     const batContent = `@echo off
 setlocal EnableDelayedExpansion
-title Fingerprint Bridge Agent - Auto Installer
+title Fingerprint Universal Bridge Agent
 color 0A
 cls
 echo ===================================================
-echo   Fingerprint System - Auto Bridge Setup
+echo   Fingerprint System - Universal Agent
+echo ===================================================
+echo   Supports: ZKTeco Direct & Text File Monitoring
 echo ===================================================
 echo.
 
@@ -52,31 +92,18 @@ node -v >nul 2>&1
 if %errorlevel% neq 0 (
     color 0E
     echo [!] Node.js is NOT installed.
-    echo [!] Starting automatic download and installation...
+    echo [!] Starting automatic download...
     echo.
-    
-    :: Download Node.js LTS (using PowerShell)
-    echo    Downloading Node.js installer (Please wait)...
     powershell -Command "Invoke-WebRequest -Uri 'https://nodejs.org/dist/v18.19.0/node-v18.19.0-x64.msi' -OutFile 'node_installer.msi'"
-    
-    :: Install Silently
-    echo    Installing Node.js... (This might ask for Admin permission)
     start /wait msiexec /i node_installer.msi /qn
-    
-    :: Cleanup
     if exist node_installer.msi del node_installer.msi
-    
-    :: Temporarily add to path for this session
     set "PATH=%PATH%;%ProgramFiles%\\nodejs"
-    
     echo    Node.js installed successfully.
     echo.
     color 0A
-) else (
-    echo [OK] Node.js is already installed.
 )
 
-:: 2. Create Directory
+:: 2. Setup Directory
 echo [2] Setting up workspace...
 if not exist "BridgeAgent" mkdir BridgeAgent
 cd BridgeAgent
@@ -84,54 +111,99 @@ cd BridgeAgent
 :: 3. Create package.json
 if not exist package.json (
     echo    Creating configuration...
-    echo {"name":"bridge-agent","version":"1.0.0","dependencies":{"express":"^4.18.2","cors":"^2.8.5","body-parser":"^1.20.2"}} > package.json
+    echo {"name":"bridge-agent","version":"2.0.0","dependencies":{"express":"^4.18.2","cors":"^2.8.5","body-parser":"^1.20.2","node-zklib":"^5.0.0"}} > package.json
 )
 
-:: 4. Create Server File (JS)
-echo    Creating server script...
+:: 4. Create Universal Server (JS)
+echo    Creating smart server script...
 (
 echo const express = require('express');
 echo const cors = require('cors');
 echo const bodyParser = require('body-parser');
+echo const fs = require('fs');
+echo const ZKLib = require('node-zklib');
 echo const app = express();
 echo const PORT = 3001;
 echo.
 echo app.use(cors());
 echo app.use(bodyParser.json());
 echo.
-echo // Mock Data
-echo let deviceStatus = { connected: false, ip: '', port: 4370 };
+echo // --- MODE 1: ZKTeco Logic ---
+echo async function getZKLogs(ip, port) {
+echo     const zk = new ZKLib(ip, port, 10000, 4000);
+echo     try {
+echo         await zk.createSocket();
+echo         const logs = await zk.getAttendances();
+echo         await zk.disconnect();
+echo         return logs;
+echo     } catch (e) {
+echo         console.error('ZK Error:', e);
+echo         return [];
+echo     }
+echo }
 echo.
-echo app.get('/status', (req, res) =^> {
-echo     res.json({ status: 'running', device: deviceStatus });
-echo });
+echo // --- MODE 2: File Logic ---
+echo function getFileLogs(filePath) {
+echo     if (!fs.existsSync(filePath)) {
+echo         console.error('File not found: ' + filePath);
+echo         return [];
+echo     }
+echo     try {
+echo         const content = fs.readFileSync(filePath, 'utf8');
+echo         const lines = content.split(/\\r?\\n/);
+echo         const logs = [];
+echo         lines.forEach(line =^> {
+echo             const parts = line.split(/[,;\\t|]/);
+echo             if (parts.length ^>= 2) {
+echo                 const id = parts[0].trim();
+echo                 const dateStr = parts.slice(1).join(' ').trim(); 
+echo                 const timestamp = new Date(dateStr);
+echo                 if (!isNaN(timestamp.getTime())) {
+echo                     logs.push({ id: id, timestamp: timestamp });
+echo                 }
+echo             }
+echo         });
+echo         return logs;
+echo     } catch (e) {
+echo         console.error('File Read Error:', e);
+echo         return [];
+echo     }
+echo }
 echo.
-echo app.post('/connect-device', (req, res) =^> {
-echo     const { ip } = req.body;
-echo     console.log('Connecting to device at ' + ip + '...');
-echo     setTimeout(() =^> {
-echo         deviceStatus = { connected: true, ip: ip, port: 4370 };
-echo         res.json({ success: true });
-echo     }, 1500);
-echo });
+echo app.get('/status', (req, res) =^> res.json({ status: 'running' }));
 echo.
-echo app.get('/logs', (req, res) =^> {
-echo     if (!deviceStatus.connected) return res.status(400).json({success: false});
-echo     res.json({ success: true, data: [{ uid: 1, id: '1001', timestamp: new Date() }] });
+echo app.get('/logs', async (req, res) =^> {
+echo     const mode = req.query.mode || 'zk_direct';
+echo     let data = [];
+echo     
+echo     if (mode === 'zk_direct') {
+echo         const { ip, port } = req.query;
+echo         if(ip) {
+echo             console.log('[ZK] Fetching from ' + ip + '...');
+echo             data = await getZKLogs(ip, port || 4370);
+echo         }
+echo     } else if (mode === 'file_monitor') {
+echo         const path = req.query.path;
+echo         if(path) {
+echo             console.log('[File] Reading from ' + path);
+echo             data = getFileLogs(path);
+echo         }
+echo     }
+echo     
+echo     console.log('Returned ' + data.length + ' records.');
+echo     res.json({ success: true, data: data });
 echo });
 echo.
 echo app.listen(PORT, () =^> {
 echo     console.log('-------------------------------------------');
-echo     console.log('  Bridge Agent is RUNNING on Port ' + PORT);
-echo     console.log('  Keep this window open while using the app');
+echo     console.log('  Universal Bridge Agent Running (Port ' + PORT + ')');
 echo     console.log('-------------------------------------------');
 echo });
 ) > server.js
 
 :: 5. Install Dependencies
 if not exist node_modules (
-    echo [3] Installing libraries (First run only)...
-    echo    Please wait while npm downloads required files...
+    echo [3] Installing libraries...
     call npm install
 )
 
@@ -139,13 +211,13 @@ if not exist node_modules (
 cls
 color 0B
 echo ===================================================
-echo   SUCCESS! Bridge Agent is Running
+echo   Bridge Agent is Running
 echo ===================================================
-echo   Status: Connected to Browser
-echo   Port:   3001
+echo   Supported Modes:
+echo   1. ZKTeco Direct (via IP)
+echo   2. Universal File (CSV/TXT)
 echo.
-echo   [NOTE] Do NOT close this black window.
-echo   You can minimize it.
+echo   Keep this window open.
 echo ===================================================
 node server.js
 pause
@@ -155,7 +227,7 @@ pause
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'تشغيل_النظام_الآلي.bat'; 
+    a.download = 'مشغل_البصمة_الشامل.bat'; 
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -164,7 +236,7 @@ pause
 
   const tabs = [
     { id: 'general', label: 'الدوام الرسمي', icon: Clock },
-    { id: 'device', label: 'ربط الأجهزة', icon: Server },
+    { id: 'device', label: 'إدارة الأجهزة', icon: Server },
     { id: 'database', label: 'قواعد البيانات', icon: Database },
   ];
 
@@ -267,37 +339,144 @@ pause
 
       {activeTab === 'device' && (
         <div className="space-y-6">
-            {/* IP Configuration */}
             <div className="bg-white rounded-b-2xl rounded-tr-2xl shadow-sm border border-slate-200 p-8">
-                <div className="mb-6 border-b border-slate-100 pb-4">
-                    <h3 className="text-xl font-bold text-slate-800 mb-1">تكوين جهاز البصمة</h3>
-                    <p className="text-slate-500">حدد عنوان IP الخاص بالجهاز الذي سيقوم برنامج الوسيط بالاتصال به.</p>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                        <label className="text-sm font-bold text-slate-700 block">عنوان الجهاز (IP Address)</label>
-                        <input 
-                            type="text" 
-                            placeholder="192.168.1.201"
-                            value={settings.deviceIp}
-                            onChange={(e) => setSettings({...settings, deviceIp: e.target.value})}
-                            className="w-full p-3 bg-white border border-slate-200 rounded-lg font-mono text-left focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none" 
-                            dir="ltr"
-                        />
+                <div className="flex justify-between items-center mb-6 border-b border-slate-100 pb-4">
+                    <div>
+                        <h3 className="text-xl font-bold text-slate-800 mb-1">أجهزة البصمة المتصلة</h3>
+                        <p className="text-slate-500">قم بإضافة الأجهزة التي تريد سحب البيانات منها (ZKTeco أو ملفات).</p>
                     </div>
-                    <div className="space-y-2">
-                        <label className="text-sm font-bold text-slate-700 block">المنفذ (Port)</label>
-                        <input 
-                            type="number" 
-                            value={settings.devicePort}
-                            onChange={(e) => setSettings({...settings, devicePort: Number(e.target.value)})}
-                            className="w-full p-3 bg-white border border-slate-200 rounded-lg font-mono text-left focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none" 
-                            dir="ltr"
-                        />
-                    </div>
+                    <button 
+                        onClick={() => setIsAddingDevice(true)}
+                        className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors shadow-lg shadow-primary/20 font-bold"
+                    >
+                        <Plus className="w-5 h-5" />
+                        <span>إضافة جهاز</span>
+                    </button>
                 </div>
-                <div className="flex justify-end pt-6 mt-4 border-t border-slate-100">
-                    <button onClick={handleSaveSettings} className="px-6 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 font-medium transition-all shadow-sm">حفظ IP</button>
+
+                {/* Add Device Form */}
+                {isAddingDevice && (
+                    <div className="bg-slate-50 border border-primary/20 rounded-xl p-6 mb-8 animate-in fade-in slide-in-from-top-4">
+                        <div className="flex justify-between items-center mb-4">
+                            <h4 className="font-bold text-slate-800">بيانات الجهاز الجديد</h4>
+                            <button onClick={() => setIsAddingDevice(false)} className="text-slate-400 hover:text-red-500">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <form onSubmit={handleAddDevice} className="space-y-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-sm font-bold text-slate-700 block mb-1">اسم الجهاز (للتعريف)</label>
+                                    <input 
+                                        type="text" 
+                                        required
+                                        placeholder="مثلاً: البوابة الرئيسية"
+                                        value={newDevice.name}
+                                        onChange={e => setNewDevice({...newDevice, name: e.target.value})}
+                                        className="w-full p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary/20 outline-none" 
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-sm font-bold text-slate-700 block mb-1">نوع الاتصال</label>
+                                    <select
+                                        value={newDevice.type}
+                                        onChange={e => setNewDevice({...newDevice, type: e.target.value as any})}
+                                        className="w-full p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary/20 outline-none" 
+                                    >
+                                        <option value="zk_direct">اتصال شبكي (ZKTeco IP)</option>
+                                        <option value="file_monitor">ملف نصي (Universal File)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            {newDevice.type === 'zk_direct' ? (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-white p-4 rounded-lg border border-slate-200">
+                                     <div>
+                                        <label className="text-sm font-bold text-slate-700 block mb-1">IP Address</label>
+                                        <input 
+                                            type="text" 
+                                            required
+                                            placeholder="192.168.1.201"
+                                            value={newDevice.ip}
+                                            onChange={e => setNewDevice({...newDevice, ip: e.target.value})}
+                                            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-left"
+                                            dir="ltr"
+                                        />
+                                     </div>
+                                     <div>
+                                        <label className="text-sm font-bold text-slate-700 block mb-1">Port</label>
+                                        <input 
+                                            type="number" 
+                                            required
+                                            value={newDevice.port}
+                                            onChange={e => setNewDevice({...newDevice, port: Number(e.target.value)})}
+                                            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-left"
+                                            dir="ltr"
+                                        />
+                                     </div>
+                                </div>
+                            ) : (
+                                <div className="bg-white p-4 rounded-lg border border-slate-200">
+                                    <label className="text-sm font-bold text-slate-700 block mb-1">مسار الملف (Full Path)</label>
+                                    <input 
+                                        type="text" 
+                                        required
+                                        placeholder="C:\Attendance\logs.txt"
+                                        value={newDevice.filePath}
+                                        onChange={e => setNewDevice({...newDevice, filePath: e.target.value})}
+                                        className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-left"
+                                        dir="ltr"
+                                    />
+                                    <p className="text-xs text-slate-500 mt-1">تأكد أن المسار صحيح وقابل للقراءة.</p>
+                                </div>
+                            )}
+
+                            <div className="flex justify-end pt-2">
+                                <button type="submit" className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-bold shadow-sm">
+                                    حفظ وإضافة
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                )}
+
+                {/* Device List */}
+                <div className="space-y-3">
+                    {settings.devices.length === 0 ? (
+                        <div className="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                            <Server className="w-12 h-12 text-slate-300 mx-auto mb-2" />
+                            <p className="text-slate-500">لا توجد أجهزة مضافة حالياً.</p>
+                        </div>
+                    ) : (
+                        settings.devices.map((device) => (
+                            <div key={device.id} className="flex items-center justify-between p-4 border border-slate-200 rounded-xl hover:shadow-md transition-all bg-white group">
+                                <div className="flex items-center gap-4">
+                                    <div className={`p-3 rounded-lg ${device.type === 'zk_direct' ? 'bg-blue-50 text-blue-600' : 'bg-amber-50 text-amber-600'}`}>
+                                        {device.type === 'zk_direct' ? <Network className="w-6 h-6" /> : <FileText className="w-6 h-6" />}
+                                    </div>
+                                    <div>
+                                        <h4 className="font-bold text-slate-800">{device.name}</h4>
+                                        <div className="flex items-center gap-3 text-sm text-slate-500 mt-0.5">
+                                            <span className="font-mono bg-slate-100 px-1.5 rounded text-xs">
+                                                {device.type === 'zk_direct' ? `${device.ip}:${device.port}` : 'File Monitor'}
+                                            </span>
+                                            {device.lastSync && device.lastSync !== '-' && (
+                                                <span className="text-xs text-green-600 flex items-center gap-1">
+                                                    <Check className="w-3 h-3" /> متصل
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button 
+                                    onClick={() => handleDeleteDevice(device.id)}
+                                    className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                >
+                                    <Trash className="w-5 h-5" />
+                                </button>
+                            </div>
+                        ))
+                    )}
                 </div>
             </div>
 
@@ -307,14 +486,14 @@ pause
                      <div className="space-y-2 flex-1">
                         <h3 className="text-xl font-bold flex items-center gap-2 text-white">
                             <Terminal className="w-6 h-6 text-green-400" />
-                            أداة الربط الذكية (Smart Bridge)
+                            الوسيط الشامل (Universal Bridge)
                         </h3>
                         <p className="text-slate-300">
-                            هذه الأداة تقوم بكل شيء: تفحص جهازك، تثبت البرامج الناقصة (Node.js)، وتقوم بتشغيل الاتصال مع جهاز البصمة بضغطة زر واحدة.
+                            أداة واحدة تدعم الجميع. قم بإضافة جميع أجهزتك في القائمة أعلاه، ثم حمل وشغل هذا الملف مرة واحدة.
                         </p>
                         <div className="flex items-center gap-2 text-xs text-blue-200 bg-blue-500/10 w-fit px-3 py-1 rounded-full border border-blue-500/20 mt-2">
                              <Check className="w-4 h-4" />
-                             يدعم التثبيت التلقائي لـ Node.js
+                             يدعم تعدد الأجهزة تلقائياً
                         </div>
                      </div>
                      
@@ -327,25 +506,7 @@ pause
                             تحميل الأداة الشاملة
                             <span className="bg-green-800 text-xs px-2 py-0.5 rounded text-green-200 font-mono">.bat</span>
                          </button>
-                         <p className="text-xs text-slate-400">ملف واحد - تشغيل مباشر</p>
-                     </div>
-                 </div>
-
-                 <div className="mt-8 pt-8 border-t border-slate-700/50 grid grid-cols-1 md:grid-cols-3 gap-6">
-                     <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700">
-                         <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center font-bold text-white mb-3">1</div>
-                         <h4 className="font-bold text-slate-200">التحميل والتشغيل</h4>
-                         <p className="text-sm text-slate-400 mt-1">حمل الملف وشغله. إذا ظهرت رسالة أمان، اضغط على "More info" ثم "Run anyway".</p>
-                     </div>
-                     <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700">
-                         <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center font-bold text-white mb-3">2</div>
-                         <h4 className="font-bold text-slate-200">التثبيت التلقائي</h4>
-                         <p className="text-sm text-slate-400 mt-1">ستقوم الأداة بفحص جهازك. إذا لم تجد Node.js، ستقوم بتحميله وتثبيته تلقائياً.</p>
-                     </div>
-                     <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700">
-                         <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center font-bold text-white mb-3">3</div>
-                         <h4 className="font-bold text-slate-200">جاهز للعمل</h4>
-                         <p className="text-sm text-slate-400 mt-1">بمجرد ظهور الشاشة الزرقاء أو الخضراء، يكون النظام متصلاً وجاهزاً لاستقبال البصمات.</p>
+                         <p className="text-xs text-slate-400">ملف واحد - تشغيل دائم</p>
                      </div>
                  </div>
             </div>

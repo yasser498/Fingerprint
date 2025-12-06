@@ -1,3 +1,4 @@
+
 export interface Student {
   id: string;
   name: string;
@@ -17,16 +18,27 @@ export interface AttendanceRecord {
   timestamp: string;
   date: string; // YYYY-MM-DD for grouping
   status: 'present' | 'late' | 'absent';
-  deviceId: string;
+  deviceId: string; // اسم الجهاز الذي سجل الحضور
+}
+
+export interface FingerprintDevice {
+  id: string;
+  name: string;          // اسم الجهاز (مثلاً: بوابة 1)
+  type: 'zk_direct' | 'file_monitor';
+  ip?: string;           // لـ ZKTeco
+  port?: number;         // لـ ZKTeco
+  filePath?: string;     // للملفات
+  lastSync?: string;
 }
 
 export interface AppSettings {
   schoolName: string;
-  startTime: string;      // وقت بداية الدوام (مثلاً 07:00)
-  lateThreshold: string;  // وقت احتساب التأخير (مثلاً 07:30)
-  endTime: string;        // وقت نهاية الدوام
-  deviceIp: string;       // عنوان جهاز البصمة
-  devicePort: number;     // منفذ الاتصال
+  startTime: string;      
+  lateThreshold: string;  
+  endTime: string;        
+  
+  // New: List of devices instead of single config
+  devices: FingerprintDevice[];
 }
 
 export type ViewState = 'dashboard' | 'students' | 'attendance' | 'reports' | 'settings';
