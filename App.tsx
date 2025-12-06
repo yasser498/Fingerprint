@@ -7,6 +7,7 @@ import Reports from './components/Reports';
 import Settings from './components/Settings';
 import { StorageService } from './services/storageService';
 import { ViewState, Student, AttendanceRecord } from './types';
+import { RefreshCcw } from 'lucide-react';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewState>('dashboard');
@@ -14,6 +15,7 @@ const App: React.FC = () => {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [schoolName, setSchoolName] = useState(StorageService.getSettings().schoolName);
   const [isConnected, setIsConnected] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   // Initialize Data
   useEffect(() => {
@@ -22,17 +24,12 @@ const App: React.FC = () => {
     setSchoolName(StorageService.getSettings().schoolName);
     
     // Initial Sync
-    StorageService.syncWithDevice().then(() => {
-        setAttendance(StorageService.getAttendance());
-    });
+    checkConnection();
 
     // Real-time Sync Loop (Every 10 seconds)
     const interval = setInterval(() => {
         StorageService.syncWithDevice().then(() => {
-             // If sync succeeds (or fails silently), update local state
              setAttendance(StorageService.getAttendance());
-             // Simple check if localhost:3001 is up (StorageService doesn't return status explicitly, 
-             // but we could infer connection if attendance updates, for now we keep it simple)
              checkConnection();
         });
     }, 10000); 
@@ -41,13 +38,21 @@ const App: React.FC = () => {
   }, []);
 
   const checkConnection = async () => {
+      setChecking(true);
       try {
           const res = await fetch('http://localhost:3001/status');
           if(res.ok) setIsConnected(true);
           else setIsConnected(false);
       } catch (e) {
           setIsConnected(false);
+      } finally {
+          setChecking(false);
       }
+  };
+
+  const handleManualReconnect = () => {
+      checkConnection();
+      StorageService.syncWithDevice();
   };
 
   // Refresh school name when navigating (e.g. back from settings)
@@ -111,10 +116,17 @@ const App: React.FC = () => {
                 <p className="text-2xl text-slate-800 font-bold tracking-tight">{schoolName}</p>
             </div>
             <div className="flex items-center gap-4">
+                <button 
+                   onClick={handleManualReconnect}
+                   title="تحديث حالة الاتصال بالوسيط"
+                   className="p-2 bg-white hover:bg-slate-100 rounded-full border border-slate-200 text-slate-500 transition-colors"
+                >
+                   <RefreshCcw className={`w-4 h-4 ${checking ? 'animate-spin text-primary' : ''}`} />
+                </button>
                 <div className={`p-2 px-4 rounded-full border shadow-sm flex items-center gap-2 transition-colors ${isConnected ? 'bg-white border-slate-200' : 'bg-red-50 border-red-100'}`}>
                     <span className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-secondary animate-pulse' : 'bg-red-500'}`}></span>
                     <span className={`text-sm font-medium hidden sm:inline ${isConnected ? 'text-slate-600' : 'text-red-600'}`}>
-                        {isConnected ? 'الخادم متصل' : 'الخادم غير متصل'}
+                        {isConnected ? 'الوسيط متصل' : 'الوسيط غير متصل'}
                     </span>
                 </div>
                 <div className="w-10 h-10 rounded-full bg-primary text-white flex items-center justify-center font-bold shadow-md">

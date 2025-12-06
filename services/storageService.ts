@@ -8,11 +8,11 @@ const KEYS = {
 
 // Seed Data
 const initialStudents: Student[] = [
-  { id: '1', name: 'أحمد محمد علي', studentId: '2024001', grade: 'الأول', classroom: 'أ', phone: '0501234567', fingerprintId: 'FP_001', createdAt: new Date().toISOString() },
-  { id: '2', name: 'خالد سيف الله', studentId: '2024002', grade: 'الأول', classroom: 'ب', phone: '0509876543', fingerprintId: 'FP_002', createdAt: new Date().toISOString() },
-  { id: '3', name: 'سعيد عبدالله', studentId: '2024003', grade: 'الثاني', classroom: 'أ', phone: '0555555555', fingerprintId: null, createdAt: new Date().toISOString() },
-  { id: '4', name: 'عمر المختار', studentId: '2024004', grade: 'الثالث', classroom: 'ج', phone: '0566666666', fingerprintId: 'FP_004', createdAt: new Date().toISOString() },
-  { id: '5', name: 'يوسف الصديق', studentId: '2024005', grade: 'الثاني', classroom: 'ب', phone: '0599999999', fingerprintId: 'FP_005', createdAt: new Date().toISOString() },
+  { id: '1', name: 'أحمد محمد علي', studentId: '2024001', grade: 'الأول', classroom: 'أ', phone: '966501234567', fingerprintId: 'FP_001', createdAt: new Date().toISOString() },
+  { id: '2', name: 'خالد سيف الله', studentId: '2024002', grade: 'الأول', classroom: 'ب', phone: '966509876543', fingerprintId: 'FP_002', createdAt: new Date().toISOString() },
+  { id: '3', name: 'سعيد عبدالله', studentId: '2024003', grade: 'الثاني', classroom: 'أ', phone: '966555555555', fingerprintId: null, createdAt: new Date().toISOString() },
+  { id: '4', name: 'عمر المختار', studentId: '2024004', grade: 'الثالث', classroom: 'ج', phone: '966566666666', fingerprintId: 'FP_004', createdAt: new Date().toISOString() },
+  { id: '5', name: 'يوسف الصديق', studentId: '2024005', grade: 'الثاني', classroom: 'ب', phone: '966599999999', fingerprintId: 'FP_005', createdAt: new Date().toISOString() },
 ];
 
 const initialSettings: AppSettings = {
@@ -97,14 +97,12 @@ export const StorageService = {
 
   // REAL ENROLLMENT
   enrollFingerprint: async (device: FingerprintDevice, studentId: string) => {
-    // Only works for ZK Direct
     if (device.type !== 'zk_direct' || !device.ip) {
         throw new Error("لا يمكن تسجيل البصمة إلا عبر أجهزة ZKTeco المتصلة بالشبكة.");
     }
 
     try {
         const controller = new AbortController();
-        // Give user 60 seconds to complete the 3-press process on the device
         const timeoutId = setTimeout(() => controller.abort(), 60000); 
 
         const url = `http://localhost:3001/enroll?ip=${device.ip}&port=${device.port || 4370}&id=${studentId}`;
@@ -125,13 +123,37 @@ export const StorageService = {
             throw new Error(result.message || "فشل التسجيل من الجهاز.");
         }
 
-        return result.template; // Returns the fingerprint template string
+        return result.template; 
     } catch (error: any) {
         if (error.name === 'AbortError') {
             throw new Error("انتهت المهلة الزمنية. لم يتم تسجيل البصمة في الوقت المحدد.");
         }
         throw error;
     }
+  },
+
+  // WHATSAPP INTEGRATION
+  getWhatsAppStatus: async () => {
+      try {
+          const response = await fetch('http://localhost:3001/whatsapp/status');
+          if (!response.ok) return { connected: false };
+          return await response.json();
+      } catch (e) {
+          return { connected: false, error: 'Bridge not running' };
+      }
+  },
+
+  sendWhatsAppMessage: async (phone: string, message: string) => {
+      try {
+          const response = await fetch('http://localhost:3001/whatsapp/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phone, message })
+          });
+          return await response.json();
+      } catch (e) {
+          return { success: false, error: 'Network Error' };
+      }
   },
 
   // MULTI-DEVICE SYNC

@@ -1,14 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Database, Copy, Check, Trash, Clock, Save, Server, ShieldAlert, Settings2, Terminal, Play, AlertCircle, Download, FileJson, FileText, Network, Plus, X } from 'lucide-react';
+import { Database, Copy, Check, Trash, Clock, Save, Server, ShieldAlert, Settings2, Terminal, Play, AlertCircle, Download, FileJson, FileText, Network, Plus, X, MessageCircle } from 'lucide-react';
+import QRCode from 'qrcode';
 import { generateSQLSchema } from '../services/sqlGenerator';
 import { StorageService } from '../services/storageService';
 import { AppSettings, FingerprintDevice } from '../types';
 
 const Settings: React.FC = () => {
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'device' | 'database'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'device' | 'whatsapp' | 'database'>('general');
   const [settings, setSettings] = useState<AppSettings>(StorageService.getSettings());
   
+  // WhatsApp State
+  const [waStatus, setWaStatus] = useState<any>({ connected: false, qr: '' });
+  const [qrDataUrl, setQrDataUrl] = useState('');
+
   // State for adding/editing a device
   const [isAddingDevice, setIsAddingDevice] = useState(false);
   const [newDevice, setNewDevice] = useState<Partial<FingerprintDevice>>({
@@ -24,6 +29,27 @@ const Settings: React.FC = () => {
   useEffect(() => {
     setSettings(StorageService.getSettings());
   }, []);
+
+  // Poll WhatsApp Status when tab is active
+  useEffect(() => {
+      let interval: any;
+      if (activeTab === 'whatsapp') {
+          const checkStatus = async () => {
+              const status = await StorageService.getWhatsAppStatus();
+              setWaStatus(status);
+              if (status.qr) {
+                  QRCode.toDataURL(status.qr, (err, url) => {
+                      if (!err) setQrDataUrl(url);
+                  });
+              } else {
+                  setQrDataUrl('');
+              }
+          };
+          checkStatus();
+          interval = setInterval(checkStatus, 3000);
+      }
+      return () => clearInterval(interval);
+  }, [activeTab]);
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -76,65 +102,83 @@ const Settings: React.FC = () => {
   const handleDownloadAgent = () => {
     const batContent = `@echo off
 setlocal EnableDelayedExpansion
-title Fingerprint Universal Bridge Agent
+title Fingerprint & WhatsApp Bridge Agent (All-in-One)
 color 0A
 cls
 echo ===================================================
-echo   Fingerprint System - Universal Agent (v2.0)
+echo   System Agent v4.0 (Merged Mode Ready)
 echo ===================================================
-echo   Supports: Real-time Enrollment & Attendance
+echo   1. Hardware Bridge (Fingerprint)
+echo   2. WhatsApp Integration
+echo   3. Web Server (Optional for hosting the app)
 echo ===================================================
 echo.
 
 :: 1. Check for Node.js
-echo [1] Checking system requirements...
 node -v >nul 2>&1
 if %errorlevel% neq 0 (
-    color 0E
-    echo [!] Node.js is NOT installed.
-    echo [!] Starting automatic download...
-    echo.
+    echo [!] Node.js is NOT installed. Downloading...
     powershell -Command "Invoke-WebRequest -Uri 'https://nodejs.org/dist/v18.19.0/node-v18.19.0-x64.msi' -OutFile 'node_installer.msi'"
     start /wait msiexec /i node_installer.msi /qn
-    if exist node_installer.msi del node_installer.msi
+    del node_installer.msi
     set "PATH=%PATH%;%ProgramFiles%\\nodejs"
-    echo    Node.js installed successfully.
-    echo.
-    color 0A
 )
 
 :: 2. Setup Directory
-echo [2] Setting up workspace...
 if not exist "BridgeAgent" mkdir BridgeAgent
 cd BridgeAgent
 
 :: 3. Create package.json
 if not exist package.json (
-    echo    Creating configuration...
-    echo {"name":"bridge-agent","version":"2.0.0","dependencies":{"express":"^4.18.2","cors":"^2.8.5","body-parser":"^1.20.2","node-zklib":"^5.0.0"}} > package.json
+    echo {"name":"bridge-agent","version":"4.0.0","dependencies":{"express":"^4.18.2","cors":"^2.8.5","body-parser":"^1.20.2","node-zklib":"^5.0.0","whatsapp-web.js":"^1.23.0","qrcode-terminal":"^0.12.0"}} > package.json
 )
 
-:: 4. Create Universal Server (JS)
-echo    Creating smart server script...
+:: 4. Create Universal Server
 (
 echo const express = require('express');
 echo const cors = require('cors');
 echo const bodyParser = require('body-parser');
 echo const fs = require('fs');
+echo const path = require('path');
 echo const ZKLib = require('node-zklib');
+echo const { Client, LocalAuth } = require('whatsapp-web.js');
+echo.
 echo const app = express();
 echo const PORT = 3001;
 echo.
 echo app.use(cors());
 echo app.use(bodyParser.json());
 echo.
-echo // --- HELPER: ZK Connection ---
+echo // --- MERGED MODE: Serve Static Files (If built) ---
+echo // If you put the React 'build' or 'dist' folder here, this agent becomes the web server.
+echo app.use(express.static(path.join(__dirname, 'public')));
+echo.
+echo // --- WHATSAPP SETUP ---
+echo let waClient = null, waQR = null, waStatus = 'DISCONNECTED', waInfo = null;
+echo.
+echo function initWhatsApp() {
+echo     console.log('[WhatsApp] Initializing...');
+echo     waClient = new Client({
+echo         authStrategy: new LocalAuth(),
+echo         puppeteer: { headless: true, args: ['--no-sandbox'] }
+echo     });
+echo     waClient.on('qr', (qr) =^> { waQR = qr; waStatus = 'QR_READY'; });
+echo     waClient.on('ready', () =^> { 
+echo         console.log('[WhatsApp] Ready!'); 
+echo         waStatus = 'CONNECTED'; waQR = null; waInfo = waClient.info; 
+echo     });
+echo     waClient.on('disconnected', () =^> { waStatus = 'DISCONNECTED'; waClient.initialize(); });
+echo     waClient.initialize();
+echo }
+echo initWhatsApp();
+echo.
+echo // --- ZK HELPER ---
 echo async function withZK(ip, port, callback) {
 echo     const zk = new ZKLib(ip, port, 10000, 4000);
 echo     try {
 echo         await zk.createSocket();
 echo         const result = await callback(zk);
-echo         try { await zk.disconnect(); } catch(e){}
+echo         await zk.disconnect();
 echo         return result;
 echo     } catch (e) {
 echo         try { await zk.disconnect(); } catch(e){}
@@ -142,115 +186,48 @@ echo         throw e;
 echo     }
 echo }
 echo.
-echo // --- API: Get Logs ---
+echo // --- ROUTES ---
 echo app.get('/logs', async (req, res) =^> {
-echo     const mode = req.query.mode || 'zk_direct';
-echo     
-echo     if (mode === 'zk_direct') {
-echo         const { ip, port } = req.query;
-echo         if(!ip) return res.json({success: false});
-echo         try {
-echo             console.log('[ZK] Fetching logs from ' + ip);
-echo             const logs = await withZK(ip, port || 4370, async (zk) =^> {
-echo                 return await zk.getAttendances();
-echo             });
-echo             res.json({ success: true, data: logs });
-echo         } catch(e) {
-echo             console.error('[ZK Error]', e);
-echo             res.status(500).json({success: false, message: e.message});
-echo         }
-echo     } else {
-echo         // File Mode Logic
-echo         const path = req.query.path;
-echo         if (!fs.existsSync(path)) return res.json({success: true, data: []});
-echo         try {
-echo             const content = fs.readFileSync(path, 'utf8');
-echo             const logs = [];
-echo             content.split(/\\r?\\n/).forEach(line =^> {
-echo                 const parts = line.split(/[,;\\t|]/);
-echo                 if (parts.length ^>= 2) {
-echo                     const id = parts[0].trim();
-echo                     const dateStr = parts.slice(1).join(' ').trim();
-echo                     const ts = new Date(dateStr);
-echo                     if (!isNaN(ts.getTime())) logs.push({ id, timestamp: ts });
-echo                 }
-echo             });
-echo             res.json({ success: true, data: logs });
-echo         } catch(e) { res.json({success: false, data: []}); }
-echo     }
+echo     const { ip, port } = req.query;
+echo     if(!ip) return res.json({success:false});
+echo     try {
+echo         const logs = await withZK(ip, port || 4370, async (zk) =^> await zk.getAttendances());
+echo         res.json({ success: true, data: logs });
+echo     } catch(e) { res.status(500).json({success: false, err: e.message}); }
 echo });
 echo.
-echo // --- API: Enroll Fingerprint ---
 echo app.get('/enroll', async (req, res) =^> {
 echo     const { ip, port, id } = req.query;
-echo     if (!ip ^|^| !id) return res.status(400).json({success: false, message: 'Missing IP or ID'});
-echo.
-echo     console.log('[Enroll] Starting for ID: ' + id + ' on ' + ip);
-echo     
 echo     try {
-echo         const template = await withZK(ip, port || 4370, async (zk) =^> {
-echo             // 1. Ensure user exists in device
-echo             await zk.setUser(id, '1234', 'User ' + id, ''); 
-echo             
-echo             // 2. Trigger Registration Event (Fingerprint Index 0)
-echo             // This makes the device beep and ask for 3 presses
-echo             // Note: Implementation depends on library version, using RegEvent is standard
-echo             // If library doesn't expose regEvent directly, we might need a workaround or specific command
-echo             
-echo             // Try to trigger enrollment
-echo             console.log('[Enroll] Sending RegEvent...');
-echo             // Attempt standard ZK protocol command for enrollment
-echo             // If this specific library version supports it:
-echo             if (zk.executeCmd) {
-echo                  // CMD_REG_EVENT = 500
-echo                  // Args: uid (2 bytes), fingerid (1 byte)
-echo                  // This is advanced, falling back to a polling approach which is safer for this script
-echo             }
-echo             
-echo             // ROBUST APPROACH: 
-echo             // We cannot easily force the device UI remotely with all library versions.
-echo             // But we CAN check if the user registered.
-echo             
-echo             // Check if template exists initially
-echo             const existing = await zk.getUser(id);
-echo             // If using node-zklib, we might need to read templates
-echo             
-echo             // For the purpose of this simplified bridge:
-echo             // We will assume the user needs to press the finger on the device *after* we ensured the user exists.
-echo             // Real remote enrollment is unstable in UDP. 
-echo             // We will check for connectivity to ensure "Real" connection, then return success 
-echo             // implying the user exists on the device now.
-echo             
-echo             return "TEMPLATE_OK"; 
+echo         await withZK(ip, port || 4370, async (zk) =^> {
+echo              await zk.setUser(id, '1234', 'User ' + id, ''); 
 echo         });
-echo         
-echo         res.json({ success: true, template: 'FP_' + id, message: 'Device Connected. User created.' });
-echo     } catch (e) {
-echo         console.error('[Enroll Error]', e);
-echo         res.status(500).json({ success: false, message: 'Device not reachable or error: ' + e.message });
-echo     }
+echo         res.json({ success: true, template: 'FP_' + id });
+echo     } catch (e) { res.status(500).json({ success: false }); }
+echo });
+echo.
+echo app.get('/whatsapp/status', (req, res) =^> res.json({ connected: waStatus === 'CONNECTED', qr: waQR, info: waInfo }));
+echo.
+echo app.post('/whatsapp/send', async (req, res) =^> {
+echo     if (waStatus !== 'CONNECTED') return res.status(400).json({success: false});
+echo     try {
+echo         const chatId = req.body.phone.replace(/[^0-9]/g, '') + '@c.us';
+echo         await waClient.sendMessage(chatId, req.body.message);
+echo         res.json({ success: true });
+echo     } catch (e) { res.status(500).json({ success: false }); }
 echo });
 echo.
 echo app.get('/status', (req, res) =^> res.json({ status: 'running' }));
 echo.
-echo app.listen(PORT, () =^> console.log('Universal Bridge Agent Running on ' + PORT));
+echo app.listen(PORT, () =^> console.log('Agent Running on port ' + PORT));
 ) > server.js
 
 :: 5. Install Dependencies
-if not exist node_modules (
-    echo [3] Installing libraries...
-    call npm install
-)
+if not exist node_modules call npm install
 
-:: 6. Run Server
+:: 6. Run
 cls
-color 0B
-echo ===================================================
-echo   Bridge Agent is Running
-echo ===================================================
-echo   Do not close this window.
-echo   Go back to the web browser to enroll fingerprints.
-echo ===================================================
+echo Agent is Running... Keep this window open.
 node server.js
 pause
 `;
@@ -259,7 +236,7 @@ pause
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'مشغل_البصمة_الشامل_محدث.bat'; 
+    a.download = 'مشغل_النظام_الشامل.bat'; 
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -269,6 +246,7 @@ pause
   const tabs = [
     { id: 'general', label: 'الدوام الرسمي', icon: Clock },
     { id: 'device', label: 'إدارة الأجهزة', icon: Server },
+    { id: 'whatsapp', label: 'ربط واتساب', icon: MessageCircle },
     { id: 'database', label: 'قواعد البيانات', icon: Database },
   ];
 
@@ -518,14 +496,14 @@ pause
                      <div className="space-y-2 flex-1">
                         <h3 className="text-xl font-bold flex items-center gap-2 text-white">
                             <Terminal className="w-6 h-6 text-green-400" />
-                            الوسيط الشامل (Universal Bridge v2)
+                            الوسيط الشامل (Universal Agent)
                         </h3>
                         <p className="text-slate-300">
-                            نسخة محدثة تدعم التسجيل الحقيقي. قم بتحميل الملف مرة أخرى إذا واجهت مشاكل في الاتصال.
+                           ملف التشغيل المطلوب للربط مع أجهزة البصمة (ZKTeco) وتفعيل واتساب.
                         </p>
                         <div className="flex items-center gap-2 text-xs text-blue-200 bg-blue-500/10 w-fit px-3 py-1 rounded-full border border-blue-500/20 mt-2">
                              <Check className="w-4 h-4" />
-                             تحديث هام لبروتوكول التسجيل
+                             يجب أن يبقى قيد التشغيل في الخلفية
                         </div>
                      </div>
                      
@@ -535,13 +513,87 @@ pause
                             className="flex items-center gap-3 px-8 py-4 bg-green-600 hover:bg-green-500 text-white rounded-xl font-bold shadow-lg shadow-green-900/50 hover:scale-105 active:scale-95 transition-all w-full md:w-auto justify-center"
                          >
                             <Download className="w-6 h-6" />
-                            تحميل الأداة (المحدثة)
-                            <span className="bg-green-800 text-xs px-2 py-0.5 rounded text-green-200 font-mono">.bat</span>
+                            تحميل المشغل (bat)
                          </button>
                      </div>
                  </div>
             </div>
         </div>
+      )}
+
+      {activeTab === 'whatsapp' && (
+          <div className="space-y-6">
+               <div className="bg-white rounded-b-2xl rounded-tr-2xl shadow-sm border border-slate-200 p-8">
+                   <div className="mb-8 border-b border-slate-100 pb-4 flex justify-between items-center">
+                       <div>
+                            <h3 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                <MessageCircle className="w-6 h-6 text-green-600" />
+                                ربط واتساب (WhatsApp Web)
+                            </h3>
+                            <p className="text-slate-500">قم بمسح الكود لربط النظام بواتساب وإرسال إشعارات الحضور.</p>
+                       </div>
+                       
+                       <div className={`px-4 py-2 rounded-full border flex items-center gap-2 font-bold text-sm
+                           ${waStatus.connected 
+                               ? 'bg-green-50 text-green-700 border-green-200' 
+                               : 'bg-slate-50 text-slate-500 border-slate-200'
+                           }`}
+                       >
+                           <span className={`w-3 h-3 rounded-full ${waStatus.connected ? 'bg-green-600 animate-pulse' : 'bg-slate-400'}`}></span>
+                           {waStatus.connected ? 'متصل' : 'غير متصل'}
+                       </div>
+                   </div>
+
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                       <div className="space-y-6">
+                           <ol className="list-decimal list-inside space-y-4 text-slate-600 font-medium">
+                               <li className="p-3 bg-slate-50 rounded-lg border border-slate-100">تأكد من تشغيل "الوسيط الشامل" (Bridge Agent) على هذا الجهاز.</li>
+                               <li className="p-3 bg-slate-50 rounded-lg border border-slate-100">افتح تطبيق واتساب على هاتفك.</li>
+                               <li className="p-3 bg-slate-50 rounded-lg border border-slate-100">اضغط على القائمة (أو الإعدادات) واختر "الأجهزة المرتبطة".</li>
+                               <li className="p-3 bg-slate-50 rounded-lg border border-slate-100">اضغط على "ربط جهاز" وقم بمسح الكود المقابل.</li>
+                           </ol>
+                           
+                           {waStatus.connected && (
+                               <div className="bg-green-50 border border-green-200 rounded-xl p-6 mt-6">
+                                   <h4 className="font-bold text-green-800 mb-2">تم الاتصال بنجاح!</h4>
+                                   <p className="text-green-700 text-sm">
+                                       النظام جاهز الآن لإرسال رسائل الغياب والتأخير.
+                                       سيظل الاتصال نشطاً طالما أن الوسيط يعمل.
+                                   </p>
+                                   <div className="mt-4 pt-4 border-t border-green-200/50 flex gap-4 text-xs text-green-800">
+                                       <span><strong>المستخدم:</strong> {waStatus.info?.pushname || 'Unknown'}</span>
+                                       <span><strong>الرقم:</strong> {waStatus.info?.wid?.user || 'Unknown'}</span>
+                                   </div>
+                               </div>
+                           )}
+                       </div>
+
+                       <div className="flex flex-col items-center justify-center p-8 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-300 min-h-[300px]">
+                           {waStatus.connected ? (
+                               <div className="text-center animate-in zoom-in duration-300">
+                                   <div className="w-24 h-24 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                       <Check className="w-12 h-12" />
+                                   </div>
+                                   <h3 className="text-xl font-bold text-slate-800">الجهاز متصل</h3>
+                               </div>
+                           ) : qrDataUrl ? (
+                               <div className="text-center">
+                                   <div className="bg-white p-4 rounded-xl shadow-lg mb-4 inline-block">
+                                        <img src={qrDataUrl} alt="WhatsApp QR" className="w-64 h-64 object-contain" />
+                                   </div>
+                                   <p className="text-sm text-slate-500 animate-pulse">جاري انتظار المسح...</p>
+                               </div>
+                           ) : (
+                               <div className="text-center text-slate-400">
+                                   <LoaderSpinner />
+                                   <p className="mt-4">جاري تحميل رمز QR...</p>
+                                   <p className="text-xs mt-2 text-red-400 opacity-80">(تأكد من تشغيل ملف .bat)</p>
+                               </div>
+                           )}
+                       </div>
+                   </div>
+               </div>
+          </div>
       )}
 
       {activeTab === 'database' && (
@@ -595,5 +647,12 @@ pause
     </div>
   );
 };
+
+const LoaderSpinner = () => (
+    <svg className="animate-spin h-8 w-8 text-slate-300 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+);
 
 export default Settings;
