@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>نظام بصمة الطلاب الذكي</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Tajawal', 'sans-serif'],
+            },
+            colors: {
+              primary: {
+                DEFAULT: '#1e3a8a', // Official Dark Blue
+                light: '#3b82f6',
+                dark: '#172554',
+              },
+              secondary: '#059669', // Emerald Green
+              accent: '#d97706',    // Official Gold/Amber
+              surface: '#f8fafc',
+            },
+            screens: {
+              'print': {'raw': 'print'},
+            }
+          },
+        },
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "recharts": "https://aistudiocdn.com/recharts@^3.5.1",
+    "xlsx": "https://aistudiocdn.com/xlsx@^0.18.5",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0"
+  }
+}
+</script>
+<style>
+  @media print {
+    body { background: white; }
+    .no-print { display: none !important; }
+    .print-only { display: block !important; }
+    /* Ensure background colors print */
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  }
+  .print-only { display: none; }
+</style>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-surface text-slate-900 font-sans h-screen overflow-hidden flex flex-col">
+    <div id="root" class="h-full"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
